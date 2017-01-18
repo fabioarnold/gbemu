@@ -1,0 +1,6 @@
+[submodule "lib/gamelib"]
+	path = lib/gamelib
+	url = https://github.com/fabioarnold/gamelib
+[submodule "lib/imgui"]
+	path = lib/imgui
+	url = https://github.com/ocornut/imgui
