@@ -4,11 +4,13 @@ DMA within 160 cycles (not instant)
 8x16 sprites
 the ppu window
 lcd stat interrupts
-implement all four timers + interrupts
+input interrupt
 audio
 serial
 memory bank controllers
 external ram (sram)
+halt/stop behavior
+lcd disable
 */
 
 const int CPU_FREQ_HZ  = 4<<20; // 4 MiHz
@@ -102,7 +104,7 @@ const int IRQ_ADR_JOYPAD  = 0x60;
 struct IO {
 	// FF00
 	union {
-		u8 input;
+		u8 INPUT;
 		struct { // select
 			u8 INPUT_select_unused0    : 4;
 			u8 INPUT_select_directions : 1; // 0=Selected
@@ -249,7 +251,7 @@ struct IO {
 struct GameBoy;
 struct Memory {
 	u8 boot_rom[0x100];  // 0x0000
-	u8 *rom; // 32kB, 64kB, 128kB, 256kB and 512kB known
+	u8 *rom = nullptr; // 32kB, 64kB, 128kB, 256kB and 512kB known
 	size_t rom_size;
 	u8 vram[0x2000];     // 0x8000
 	u8  ram[0x2000];     // 0xC000
@@ -257,7 +259,7 @@ struct Memory {
 	IO io;               // 0xFF00
 	u8 hram[0x7F];       // 0xFF80
 
-	void init(GameBoy *gameboy);
+	void init();
 
 	u8 load8(u16 address);
 	void store8(u16 address, u8 value);
@@ -267,9 +269,7 @@ struct Memory {
 	u8 *map(u16 address);
 };
 
-void Memory::init(GameBoy *gameboy) {
-	gb = gameboy;
-
+void Memory::init() {
 	memset(ram,  0, sizeof(ram));
 	memset(vram, 0, sizeof(vram));
 	memset(&oam, 0, sizeof(oam));
@@ -359,8 +359,8 @@ struct CPU {
 
 	void nop() {}
 	void ill() { DEBUG_illegal_instruction = true; }
-	void halt() { halted = true; }
-	void stop_delay() { halted = true; } // never encountered this instruction
+	void halt() { halted = true; } // TODO: halt bug of DMG
+	void stop_delay() { halted = true; }
 	void stop() { state = CPU_STATE_READ_PC; instruction = &CPU::stop_delay; }
 
 
@@ -381,13 +381,13 @@ struct CPU {
 
 	#define CPU_INSTRUCTION_CB_ALU(NAME, BODY) \
 		CPU_INSTRUCTIONS_CB(NAME, CPU_STATE_MEMORY_STORE, BODY \
-			F_N = F_H = 0; F_Z = !reg;)
+			F_N = F_H = 0; F_Z = !(reg&0xFF);)
 
 	CPU_INSTRUCTION_CB_ALU(rl, int wide = (reg<<1) | F_C; reg = wide; F_C = wide>>8;)
 	CPU_INSTRUCTION_CB_ALU(rlc, reg = (reg<<1) | (reg>>7); F_C=reg&1;)
 	CPU_INSTRUCTION_CB_ALU(rr, int low = reg&1; reg = (reg>>1) | (F_C<<7); F_C = low;)
 	CPU_INSTRUCTION_CB_ALU(rrc, F_C = reg&1; reg = (reg>>1) | (F_C<<7);)
-	CPU_INSTRUCTION_CB_ALU(sla, F_C = reg >> 7; reg <<= 1;)
+	CPU_INSTRUCTION_CB_ALU(sla, F_C = reg>>7; reg <<= 1;)
 	CPU_INSTRUCTION_CB_ALU(sra, F_C = reg&1; reg = ((s8)reg) >> 1;)
 	CPU_INSTRUCTION_CB_ALU(srl, F_C = reg&1; reg >>= 1;)
 	CPU_INSTRUCTION_CB_ALU(swap, reg = (reg<<4) | (reg>>4); F_C = 0;)
@@ -757,8 +757,8 @@ struct CPU {
 		int diff = (s8)bus; // signed
 		int sum = SP + diff;
 		F_Z = F_N = 0;
-		F_C = diff + (SP&0xFF) > 0xFF;
-		F_H = (diff&0xF) + (SP&0xF) > 0xF;
+		F_C = (diff&0xFF) + (SP&0xFF) >= 0x100;
+		F_H = (diff&0xF) + (SP&0xF) >= 0x10;
 		HL = sum;
 		state = CPU_STATE_STALL;
 	}
@@ -1051,7 +1051,7 @@ struct CPU {
 		CPU_INSTRUCTION(add_ ## NAME, \
 			int res = A + OPERAND; \
 			F_N = 0; \
-			F_H = (A&0xF) + (OPERAND&0xF) > 0x10; \
+			F_H = (A&0xF) + (OPERAND&0xF) >= 0x10; \
 			F_C = res >= 0x100; \
 			A = res; \
 			F_Z = !A;)
@@ -1097,10 +1097,10 @@ struct CPU {
 
 	#define CPU_INSTRUCTION_CP(NAME, OPERAND) \
 		CPU_INSTRUCTION(cp_ ## NAME, \
-			int res = A - bus; \
-			F_Z = !res; \
+			int res = A - OPERAND; \
+			F_Z = !(res&0xFF); \
 			F_N = 1; \
-			F_H = (A&0xF) - (bus&0xF) < 0; \
+			F_H = (A&0xF) - (OPERAND&0xF) < 0; \
 			F_C = res < 0;)
 
 	// register / bus
@@ -1173,7 +1173,7 @@ struct CPU {
 		CPU_INSTRUCTION(add_hl_ ## NAME ## _finish, \
 			int res = H + REG_HI + F_C; \
 			F_N = 0; \
-			F_H = (H&0xF) + (REG_HI&0xF) > 0x10; \
+			F_H = (H&0xF) + (REG_HI&0xF) + F_C >= 0x10; \
 			F_C = res >= 0x100; \
 			H = res;) \
 		CPU_INSTRUCTION(add_hl_ ## NAME, \
@@ -1190,7 +1190,7 @@ struct CPU {
 	// 0x29 ADD HL,HL
 	CPU_INSTRUCTION_ADD_HL(hl, HL, H, L);
 	// 0x39 ADD HL,SP
-	CPU_INSTRUCTION_ADD_HL(sp, SP, (SP&0xFF), (SP>>8));
+	CPU_INSTRUCTION_ADD_HL(sp, SP, S, P);
 
 
 
@@ -1202,8 +1202,8 @@ struct CPU {
 		int diff = (s8)bus; // signed
 		int sum = SP + diff;
 		F_Z = F_N = 0;
-		F_C = diff + (SP&0xFF) > 0xFF;
-		F_H = (diff&0xF) + (SP&0xF) > 0xF;
+		F_C = (diff&0xFF) + (SP&0xFF) >= 0x100;
+		F_H = (diff&0xF) + (SP&0xF) >= 0x10;
 		address = sum;
 		state = CPU_STATE_OP2;
 		instruction = &CPU::add_sp_r8_finish;
@@ -1233,6 +1233,7 @@ struct CPU {
 			state = CPU_STATE_MEMORY_LOAD; \
 			address = SP++; \
 			REG_LO = bus; \
+			F &= 0xF0; \
 			instruction = &CPU::ld_ ## NAME_HI ## _bus;) \
 		CPU_INSTRUCTION(pop_ ## NAME, \
 			state = CPU_STATE_MEMORY_LOAD; \
@@ -1950,7 +1951,6 @@ enum PPUState {
 
 // picture processing unit
 struct PPU {
-	Memory *memory;
 	u8 framebuffer[LCD_HEIGHT*LCD_WIDTH]; // pixel values 0-3
 
 	PPUState state;
@@ -1972,6 +1972,39 @@ struct PPU {
 
 	void reset();
 	void step();
+
+// private:
+	GameBoy *gb;
+};
+
+struct GameBoy {
+	CPU cpu;
+	PPU ppu;
+	Memory memory;
+
+	// input
+	ButtonState button_right;
+	ButtonState button_left;
+	ButtonState button_up;
+	ButtonState button_down;
+	ButtonState button_a;
+	ButtonState button_b;
+	ButtonState button_select;
+	ButtonState button_start;
+
+	bool running = false;
+
+	void init();
+
+	void loadROM(const char *filepath);
+
+	void reset();
+	void step();
+
+	void enableLCD(); // basically resets the LCD
+
+	void onIORead(u16 address);
+	u8 onIOWrite(u16 address, u8 value); // might return updated value
 };
 
 void PPU::reset() {
@@ -1984,9 +2017,13 @@ void PPU::reset() {
 }
 
 void PPU::step() {
+	u8 *vram = gb->memory.vram;
+	OAM *oam = &gb->memory.oam;
+	IO *io = &gb->memory.io;
+
 	cycle_count += 4;
 
-	int obj_h = memory->io.LCDC_obj_size ? 16 : 8;
+	int obj_h = io->LCDC_obj_size ? 16 : 8;
 
 	// (R) 0: HBLANK, 1: VBLANK, 2: OAM-RAM, 3: transfer data to LCD
 	switch (state) {
@@ -1994,22 +2031,22 @@ void PPU::step() {
 	{
 		int min_x = 0; // 0=invisible
 		if (line_obj_count > 0) {
-			min_x = memory->oam.objs[line_objs[line_obj_count-1]].x;
+			min_x = oam->objs[line_objs[line_obj_count-1]].x;
 		}
 
-		for (int i = 0; i < ARRAY_COUNT(memory->oam.objs); i++) {
+		for (int i = 0; i < ARRAY_COUNT(oam->objs); i++) {
 			if (line_obj_count >= ARRAY_COUNT(line_objs)) break;
-			if (memory->oam.objs[i].x == 0) continue; // invisible
-			if (memory->oam.objs[i].x < min_x) continue;
+			if (oam->objs[i].x == 0) continue; // invisible
+			if (oam->objs[i].x < min_x) continue;
 			if (line_obj_count > 0 && i == line_objs[line_obj_count-1]) continue;
-			if (memory->io.LY+16 >= memory->oam.objs[i].y
-			 && memory->io.LY+16 <  memory->oam.objs[i].y+obj_h) {
+			if (io->LY+16 >= oam->objs[i].y
+			 && io->LY+16 <  oam->objs[i].y+obj_h) {
 				line_objs[line_obj_count++] = i;
 				break;
 			}
 		}
 
-		memory->io.STAT_mode = 2; // OAM search
+		io->STAT_mode = 2; // OAM search
 		if (cycle_count - cycle_begin >= OAM_SEARCH_CYCLES) {
 			state = PPU_STATE_PIXEL_TRANSFER;
 			cycle_begin = cycle_count;
@@ -2027,16 +2064,16 @@ void PPU::step() {
 		u8 OBP0[4];
 		u8 OBP1[4];
 		for (int i = 0; i < 4; i++) {
-			BGP[i]  = (memory->io.BGP  >> (2*i)) & 0x03;
-			OBP0[i] = (memory->io.OBP0 >> (2*i)) & 0x03;
-			OBP1[i] = (memory->io.OBP1 >> (2*i)) & 0x03;
+			BGP[i]  = (io->BGP  >> (2*i)) & 0x03;
+			OBP0[i] = (io->OBP0 >> (2*i)) & 0x03;
+			OBP1[i] = (io->OBP1 >> (2*i)) & 0x03;
 		}
 		u8 *palettes[] = { BGP, OBP0, OBP1 };
 		// vram addresses
-		int map_adr  = memory->io.LCDC_bg_tile_map ? 0x1C00 : 0x1800;
-		int tile_adr = memory->io.LCDC_tile_data   ? 0x0000 : 0x1000;
+		int map_adr  = io->LCDC_bg_tile_map ? 0x1C00 : 0x1800;
+		int tile_adr = io->LCDC_tile_data   ? 0x0000 : 0x1000;
 
-		int LY = memory->io.LY;
+		int LY = io->LY;
 		assert(LY >= 0 && LY < LCD_HEIGHT);
 		assert(LX >= 0 && LX < LCD_WIDTH);
 
@@ -2044,7 +2081,7 @@ void PPU::step() {
 		// try to draw 8 pixels per cycle
 		for (int px = 0; px < 8; px++) {
 			// discard pixels (subtile scrolling)
-			if (LX == 0) pixel_fifo_begin += memory->io.SCX&0x7;
+			if (LX == 0) pixel_fifo_begin += io->SCX&0x7;
 
 			// less than 8 pixels in the fifo
 			while (pixel_fifo_end - pixel_fifo_begin < 8) {
@@ -2054,17 +2091,17 @@ void PPU::step() {
 				u8 llb = 0; // line low bits
 				u8 lhb = 0; // line high bits
 				// fetch bg tile
-				if (memory->io.LCDC_bg_enable) {
-					int sy = (LY + memory->io.SCY) & 0xFF;
-					int sx = (LX + memory->io.SCX + fifo_pos) & 0xFF;
+				if (io->LCDC_bg_enable) {
+					int sy = (LY + io->SCY) & 0xFF;
+					int sx = (LX + io->SCX + fifo_pos) & 0xFF;
 					int ty = sy/8;
 					int tx = sx/8;
-					int ti = memory->io.LCDC_tile_data ?
-						memory->vram[map_adr+ty*0x20+tx] : 
-						((s8*)memory->vram)[map_adr+ty*0x20+tx]; // signed
+					int ti = io->LCDC_tile_data ?
+						vram[map_adr+ty*0x20+tx] :
+						((s8*)vram)[map_adr+ty*0x20+tx]; // signed
 					// line with high and low bits
-					llb = memory->vram[tile_adr+2*(8*ti+(sy&0x7))+0];
-					lhb = memory->vram[tile_adr+2*(8*ti+(sy&0x7))+1];
+					llb = vram[tile_adr+2*(8*ti+(sy&0x7))+0];
+					lhb = vram[tile_adr+2*(8*ti+(sy&0x7))+1];
 				}
 
 				// convert line to 8 pixels
@@ -2078,17 +2115,17 @@ void PPU::step() {
 			}
 
 			// draw objs
-			if (memory->io.LCDC_obj_enable) {
+			if (io->LCDC_obj_enable) {
 				while (line_obj_index < line_obj_count) {
-					OAM::OBJ *obj = &memory->oam.objs[line_objs[line_obj_index]];
+					OAM::OBJ *obj = &oam->objs[line_objs[line_obj_index]];
 					if (obj->x > LX+8) break; // not yet
 
 					// blit obj over the first 8 pixel in the fifo
 					int sy = (LY - obj->y) & 0x7;
 					if (obj->ATTRIB_flip_y) sy = 7-sy;
 					// line with high and low bits
-					u8 llb = memory->vram[2*(8*obj->tile+sy)+0];
-					u8 lhb = memory->vram[2*(8*obj->tile+sy)+1];
+					u8 llb = vram[2*(8*obj->tile+sy)+0];
+					u8 lhb = vram[2*(8*obj->tile+sy)+1];
 
 					for (int x = 0; x < 8; x++) {
 						int shift = obj->ATTRIB_flip_x ? x : (7-x);
@@ -2111,7 +2148,7 @@ void PPU::step() {
 			LX++;
 		}
 
-		memory->io.STAT_mode = 3; // pixel transfer
+		io->STAT_mode = 3; // pixel transfer
 		//if (cycle_count - cycle_begin >= PIXEL_TRANSFER_CYCLES) {
 		if (LX >= LCD_WIDTH) {
 			state = PPU_STATE_HBLANK;
@@ -2119,14 +2156,15 @@ void PPU::step() {
 		}
 	} break;
 	case PPU_STATE_HBLANK:
-		memory->io.STAT_mode = 0; // H-Blank
+		io->STAT_mode = 0; // H-Blank
 		if (cycle_count - cycle_begin >= PIXEL_TRANSFER_CYCLES + HBLANK_CYCLES) {
-			memory->io.LY++;
-			if (memory->io.LY == LCD_HEIGHT) {
+			io->LY++;
+			if (io->LY == LCD_HEIGHT) {
 				state = PPU_STATE_VBLANK;
 				vsync = true; // do vsync
 				frame_count++;
-				memory->io.IF_vblank = 1; // raise IRQ
+				io->IF_vblank = 1; // raise IRQ
+				gb->cpu.halted = false;
 			} else {
 				state = PPU_STATE_OAM_SEARCH;
 				// init oam search
@@ -2137,14 +2175,14 @@ void PPU::step() {
 		break;
 	case PPU_STATE_VBLANK:
 		vsync = false;
-		memory->io.STAT_mode = 1; // V-Blank
-		memory->io.LY = LCD_HEIGHT + (cycle_count - cycle_begin)
+		io->STAT_mode = 1; // V-Blank
+		io->LY = LCD_HEIGHT + (cycle_count - cycle_begin)
 			/ (OAM_SEARCH_CYCLES + PIXEL_TRANSFER_CYCLES + HBLANK_CYCLES);
 		if (cycle_count - cycle_begin >= VBLANK_CYCLES) {
 			// frame complete
-			memory->io.LY = 0;
+			io->LY = 0;
 			cycle_begin = cycle_count;
-			memory->io.IF_vblank = 0; // clear IRQ
+			io->IF_vblank = 0; // clear IRQ
 
 			state = PPU_STATE_OAM_SEARCH;
 			// init oam search
@@ -2155,46 +2193,17 @@ void PPU::step() {
 	}
 }
 
-struct GameBoy {
-	CPU cpu;
-	PPU ppu;
-	Memory memory;
-
-	// input
-	ButtonState button_right;
-	ButtonState button_left;
-	ButtonState button_up;
-	ButtonState button_down;
-	ButtonState button_a;
-	ButtonState button_b;
-	ButtonState button_select;
-	ButtonState button_start;
-
-	bool running = false;
-
-	void init();
-
-	void readROM(const char *filepath);
-
-	void reset();
-	void step();
-
-	void enableLCD(); // basically resets the LCD
-
-	void onIORead(u16 address);
-	u8 onIOWrite(u16 address, u8 value); // might return updated value
-};
-
 void GameBoy::init() {
+	memory.gb = this;
 	cpu.memory = &memory;
-	ppu.memory = &memory;
+	ppu.gb = this;
 	reset();
 }
 
 void GameBoy::reset() {
 	cpu.reset();
 	ppu.reset();
-	memory.init(this);
+	memory.init();
 	running = false;
 }
 
@@ -2240,11 +2249,6 @@ u8 GameBoy::onIOWrite(u16 address, u8 value) {
 	switch (address) {
 	case REG_DIV:
 		return 0; // writes reset DIV to 0
-	case REG_TIMA:
-	case REG_TMA:
-	case REG_TAC:
-		LOGI("wrote timer");
-		break;
 	case REG_LCDC:
 	{
 		bool was_enabled = memory.io.LCDC_enable;
@@ -2260,9 +2264,6 @@ u8 GameBoy::onIOWrite(u16 address, u8 value) {
 		u8 *src = memory.map(value<<8);
 		memcpy((void*)&memory.oam, src, 0xA0);
 	} break;
-	case REG_IE:
-		LOGI("wrote interrupt 0x%02X", value);
-		break;
 	default: break;
 	}
 
@@ -2353,10 +2354,10 @@ bool CartridgeHeader::isChecksumCorrect() {
 	return (sum & 0xFF) == 0; // lower byte needs to be zero
 }
 
-void GameBoy::readROM(const char *filepath) {
+void GameBoy::loadROM(const char *filepath) {
 	if (memory.rom) { delete [] memory.rom; }
 	memory.rom = readDataFromFile(filepath, &memory.rom_size);
-	if (!memory.rom) exit(1);
+	if (!memory.rom) return;
 	CartridgeHeader *header = (CartridgeHeader*)(memory.rom+0x100);
 	if (!header->isChecksumCorrect()) {
 		LOGE("cartridge has incorrect checksum");
@@ -2402,6 +2403,7 @@ void CPU::step() {
 			if (memory->io.TIMA == 0xFF) {
 				memory->io.TIMA = memory->io.TMA; // reset
 				memory->io.IF_timer = 1; // raise interrupt
+				halted = false;
 			} else {
 				memory->io.TIMA++;
 			}

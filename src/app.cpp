@@ -17,7 +17,7 @@ void App::init() {
 	assert(dmg_rom_size == sizeof(gb.memory.boot_rom));
 	memcpy(gb.memory.boot_rom, dmg_rom, dmg_rom_size);
 
-	gb.readROM("tetris.gb");
+	gb.loadROM("tetris.gb");
 
 	gb.init();
 
@@ -50,6 +50,14 @@ void cpuGUI(GameBoy *gb) {
 	CPU *cpu = &gb->cpu;
 
 	ImGui::Begin("CPU");
+
+	static char rom_filepath[256] = "";
+	ImGui::InputText("ROM file", rom_filepath, sizeof(rom_filepath));
+	ImGui::SameLine();
+	if (ImGui::Button("Load")) {
+		gb->loadROM(rom_filepath);
+	}
+
 	if (ImGui::Button("Reset")) gb->reset();
 	ImGui::SameLine();
 	if (ImGui::Button(gb->running ? "Stop" : "Run")) {
@@ -125,7 +133,7 @@ void cpuGUI(GameBoy *gb) {
 }
 
 void ppuGUI(PPU *ppu) {
-	IO *io = &ppu->memory->io;
+	IO *io = &ppu->gb->memory.io;
 	ImGui::Begin("PPU");
 	ImGui::Text("cycle %llu", ppu->cycle_count);
 	ImGui::Text("frame %llu", ppu->frame_count);
@@ -303,7 +311,7 @@ struct MyImTexture {
 
 void App::update() {
 	glClear(GL_COLOR_BUFFER_BIT);
-	rom_editor.Draw("ROM Editor", gb.memory.rom, gb.memory.rom_size);
+	if (gb.memory.rom) rom_editor.Draw("ROM Editor", gb.memory.rom, gb.memory.rom_size);
 	ram_editor.Draw("RAM Editor", gb.memory.ram, sizeof(gb.memory.ram));
 	hram_editor.Draw("HRAM Editor", gb.memory.hram, sizeof(gb.memory.hram));
 	vram_editor.Draw("VRAM Editor", gb.memory.vram, sizeof(gb.memory.vram));
