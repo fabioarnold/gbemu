@@ -91,6 +91,13 @@ const int REG_DMA = 0x46; // source address XX00-XX9F
 const int REG_IF = 0x0F; // individual interrupt requests
 const int REG_IE = 0xFF; // enable individual interrupts
 
+// interrupt jump addresses
+const int IRQ_ADR_VBLANK  = 0x40;
+const int IRQ_ADR_LCDSTAT = 0x48;
+const int IRQ_ADR_TIMER   = 0x50;
+const int IRQ_ADR_SERIAL  = 0x58;
+const int IRQ_ADR_JOYPAD  = 0x60;
+
 // input/output registers
 struct IO {
 	// FF00
@@ -1620,9 +1627,9 @@ struct CPU {
 		&CPU::rst_08,     // 0xCF
 		&CPU::ret_nc,     // 0xD0
 		&CPU::pop_de,     // 0xD1
-		&CPU::jp_nz_a16,  // 0xD2
+		&CPU::jp_nc_a16,  // 0xD2
 		&CPU::ill,        // 0xD3
-		&CPU::call_nz_a16,// 0xD4
+		&CPU::call_nc_a16,// 0xD4
 		&CPU::push_de,    // 0xD5
 		&CPU::sub_d8,     // 0xD6
 		&CPU::rst_10,     // 0xD7
@@ -1884,8 +1891,8 @@ struct CPU {
 		{ "RST 08H", 1 },
 		{ "RET NC", 1 },
 		{ "POP DE", 1 },
-		{ "ILL", 0 },
 		{ "JP NC,a16", 3 },
+		{ "ILL", 0 },
 		{ "CALL NC,a16", 3 },
 		{ "PUSH DE",     1 },
 		{ "SUB d8",      2 },
@@ -1948,7 +1955,7 @@ struct PPU {
 
 	PPUState state;
 	u64 cycle_count;
-	u64 cycle_begin; // when did the last phase start
+	u64 cycle_begin; // when did the current mode begin
 
 	bool vsync = false;
 	u64 frame_count = 0;
@@ -2377,13 +2384,29 @@ void CPU::reset() {
 	DEBUG_not_implemented_error = false;
 }
 
-const int IRQ_ADR_VBLANK = 0x40;
-
 void CPU::step() {
-	// update timer
-	// DIV_HZ = 1<<14; 16 KiH
+	// update timers
 	// CPU_HZ = 1<<22; 4 MiHz
-	if (cycle_count & (1<<8)) memory->io.DIV++;
+	// DIV_HZ = 1<<14; 16 KiH
+	if ((cycle_count&0xFF) == 0)  memory->io.DIV++;
+
+	if (memory->io.TAC_stop == 1) { // timer running
+		int period = 0;
+		switch (memory->io.TAC_clock) {
+			case 0: period = 1<<10; break; // 1<<12 Hz
+			case 1: period = 1<<4; break; // 1<<18 Hz
+			case 2: period = 1<<6; break; // 1<<16 Hz
+			case 3: period = 1<<8; break; // 1<<14 Hz
+		}
+		if ((cycle_count&(period-1)) == 0) {
+			if (memory->io.TIMA == 0xFF) {
+				memory->io.TIMA = memory->io.TMA; // reset
+				memory->io.IF_timer = 1; // raise interrupt
+			} else {
+				memory->io.TIMA++;
+			}
+		}
+	}
 
 	cycle_count++;
 
@@ -2399,6 +2422,13 @@ void CPU::step() {
 				address = IRQ_ADR_VBLANK;
 				instruction = &CPU::irq;
 				memory->io.IF_vblank = 0;
+				break;
+			}
+			if (memory->io.IE_timer && memory->io.IF_timer) {
+				halted = false;
+				address = IRQ_ADR_TIMER;
+				instruction = &CPU::irq;
+				memory->io.IF_timer = 0;
 				break;
 			}
 		}

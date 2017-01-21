@@ -37,9 +37,10 @@
 #include "video/texture.h"
 
 #include "gameboy.h"
-#include "app.h"
 
 #include "gui/memory_editor.h"
+#include "app.h"
+
 
 
 

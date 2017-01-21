@@ -14,8 +14,8 @@ void App::init() {
 
 	size_t dmg_rom_size = 0;
 	u8 *dmg_rom = readDataFromFile("dmg_rom.bin", &dmg_rom_size);
-	assert(dmg_rom_size == 0x100);
-	memcpy(gb.memory.boot_rom, dmg_rom, 0x100);
+	assert(dmg_rom_size == sizeof(gb.memory.boot_rom));
+	memcpy(gb.memory.boot_rom, dmg_rom, dmg_rom_size);
 
 	gb.readROM("tetris.gb");
 
@@ -45,8 +45,6 @@ void App::init() {
 
 	glBindTexture(GL_TEXTURE_2D, 0);
 }
-
-MemoryEditor memory_editor;
 
 void cpuGUI(GameBoy *gb) {
 	CPU *cpu = &gb->cpu;
@@ -176,6 +174,7 @@ void ppuGUI(PPU *ppu) {
 
 void ioGUI(IO *io) {
 	ImGui::Begin("IO");
+
 	ImGui::Text("IF 0x%02X", io->IF);
 	u32 IF = io->IF;
 	ImGui::CheckboxFlags("V-Blank Request", &IF, 0x01);
@@ -190,6 +189,13 @@ void ioGUI(IO *io) {
 	ImGui::CheckboxFlags("Timer Enable", &IE, 0x04);
 	ImGui::CheckboxFlags("Serial Enable", &IE, 0x08);
 	ImGui::CheckboxFlags("Joypad Enable", &IE, 0x10);
+
+	ImGui::Text("Timer");
+	ImGui::Text("DIV  0x%02X", io->DIV);
+	ImGui::Text("TIMA 0x%02X", io->TIMA);
+	ImGui::Text("TMA  0x%02X", io->TMA);
+	ImGui::Text("TAC  0x%02X", io->TAC);
+
 	ImGui::End();
 }
 
@@ -297,10 +303,10 @@ struct MyImTexture {
 
 void App::update() {
 	glClear(GL_COLOR_BUFFER_BIT);
-	memory_editor.Draw("ROM Editor", gb.memory.rom, gb.memory.rom_size);
-	memory_editor.Draw("RAM Editor", gb.memory.ram, sizeof(gb.memory.ram));
-	memory_editor.Draw("HRAM Editor", gb.memory.hram, sizeof(gb.memory.hram));
-	memory_editor.Draw("VRAM Editor", gb.memory.vram, sizeof(gb.memory.vram));
+	rom_editor.Draw("ROM Editor", gb.memory.rom, gb.memory.rom_size);
+	ram_editor.Draw("RAM Editor", gb.memory.ram, sizeof(gb.memory.ram));
+	hram_editor.Draw("HRAM Editor", gb.memory.hram, sizeof(gb.memory.hram));
+	vram_editor.Draw("VRAM Editor", gb.memory.vram, sizeof(gb.memory.vram));
 	cpuGUI(&gb);
 	ppuGUI(&gb.ppu);
 	ioGUI(&gb.memory.io);
@@ -325,7 +331,7 @@ void App::update() {
 	tex1.target = GL_TEXTURE_2D;
 	tex2.target = GL_TEXTURE_2D;
 
-	ImGui::Begin("Framebuffer");
+	ImGui::Begin("LCD");
 	tex0.id = framebuffer_tex;
 	ImGui::Image((ImTextureID)&tex0, ImVec2(LCD_WIDTH, LCD_HEIGHT));
 	ImGui::End();

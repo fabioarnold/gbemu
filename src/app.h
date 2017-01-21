@@ -12,5 +12,9 @@ struct App {
 	void update();
 
 private:
+	MemoryEditor rom_editor;
+	MemoryEditor ram_editor;
+	MemoryEditor hram_editor;
+	MemoryEditor vram_editor;
 	void updateGLTextures();
 };
