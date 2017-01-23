@@ -2,16 +2,16 @@
 TODO:
 DMA within 160 cycles (not instant)
 8x16 sprites
-the ppu window
+the PPU window
 sprite/bg priorities
-lcd stat interrupts
+LCD stat interrupts
 input interrupt
 audio
 serial
 memory bank controllers
-external ram (sram)
+save/load SRAM
 halt/stop behavior
-lcd disable
+LCD disable
 */
 
 const int CPU_FREQ_HZ  = 4<<20; // 4 MiHz
@@ -37,8 +37,8 @@ const int VSYNC_CYCLES = (LCD_HEIGHT + VBLANK_LINES)
 const float VSYNC_HZ = (float)CPU_FREQ_HZ / (float)VSYNC_CYCLES;
 
 // addresses
-const int ADR_CART_BANK0          = 0x0000;
-const int ADR_CART_BANK1          = 0x4000;
+const int ADR_ROM_BANK0           = 0x0000;
+const int ADR_ROM_BANK1           = 0x4000;
 const int ADR_VRAM                = 0x8000;
 const int ADR_RAM_EXTERNAL        = 0xA000;
 const int ADR_RAM_INTERNAL_BANK0  = 0xC000;
@@ -52,13 +52,13 @@ const int ADR_HRAM                = 0xFF80;
 const int ADR_IE                  = 0xFFFF;
 
 // sizes
-const int SIZE_BOOT_ROM = 0x100;  // DMG
+const int SIZE_BOOT_ROM = 0x0100;  // DMG
 const int SIZE_ROM_BANK = 0x4000;
 const int SIZE_VRAM     = 0x2000;
 const int SIZE_RAM      = 0x2000;
-const int SIZE_OAM      = 0xA0;
-const int SIZE_IO       = 0x80;
-const int SIZE_HRAM     = 0x7F;
+const int SIZE_OAM      = 0x00A0;
+const int SIZE_IO       = 0x0080;
+const int SIZE_HRAM     = 0x007F;
 
 // object attribute memory
 struct OAM {
@@ -266,28 +266,76 @@ struct Memory {
 	size_t rom_size;
 	u8 *rom_bank0 = nullptr;
 	u8 *rom_bank1 = nullptr;
+	u8 *sram = nullptr; // 2kB, 8kB, 32kB
+	size_t sram_size;
+	u8 *sram_bank;
 	u8 vram[SIZE_VRAM]; // 0x8000
 	u8  ram[SIZE_RAM];  // 0xC000
 	OAM oam;            // 0xFE00
 	IO io;              // 0xFF00
 	u8 hram[SIZE_HRAM]; // 0xFF80
 
+	bool sram_enabled = false;
+
 	void init();
+	void reset(); // doesn't clear ROM
+	void loadROM(const char *filepath);
 
 	u8 load8(u16 address);
 	void store8(u16 address, u8 value);
 
-//private:
+	void DMAtoOAM(u16 src_address); // transfer 160 bytes from src_address to oam
+
+	// memory bank controller
+	typedef void (Memory::*MBC)(u16 address, u8 value);
+	MBC mbc; // set on loadROM
+	void mbc0(u16 address, u8 value); // dummy MBC
+	void mbc3(u16 address, u8 value);
+
 	GameBoy *gb;
+private:
 	u8 *map(u16 address);
 };
 
 void Memory::init() {
-	memset(ram,  0, sizeof(ram));
+	reset();
+
+	if (rom) { delete [] rom; }
+	rom = nullptr;
+	rom_size = 0;
+	rom_bank0 = nullptr;
+	rom_bank1 = nullptr;
+
+	if (sram) { delete [] sram; }
+	sram = nullptr;
+	sram_size = 0;
+	sram_bank = nullptr;
+
+	mbc = &Memory::mbc0;
+}
+
+void Memory::reset() {
 	memset(vram, 0, sizeof(vram));
+	memset(ram,  0, sizeof(ram));
 	memset(&oam, 0, sizeof(oam));
 	memset(&io,  0, sizeof(io));
 	memset(hram, 0, sizeof(hram));
+
+	if (rom) {
+#if 0
+		rom_bank0 = &rom[ADR_ROM_BANK0];
+		rom_bank1 = &rom[ADR_ROM_BANK1];
+#else
+		rom_bank0 = rom;
+		rom_bank1 = rom+SIZE_ROM_BANK;
+#endif
+	}
+
+	if (sram) {
+		sram_bank = sram;
+	}
+
+	sram_enabled = false;
 }
 
 enum CPUState {
@@ -2216,7 +2264,7 @@ void GameBoy::init() {
 void GameBoy::reset() {
 	cpu.reset();
 	ppu.reset();
-	memory.init();
+	memory.reset();
 	running = false;
 }
 
@@ -2248,13 +2296,6 @@ void GameBoy::onIORead(u16 address) {
 			memory.io.INPUT_down = !button_down.down();
 		}
 		break;
-	case REG_DIV:
-		break;
-	case REG_TIMA:
-	case REG_TMA:
-	case REG_TAC:
-		LOGI("timer not implemented!");
-		break;
 	default: break;
 	}
 }
@@ -2272,10 +2313,8 @@ u8 GameBoy::onIOWrite(u16 address, u8 value) {
 	} break;
 	case REG_DMA:
 	{
-		// instant dma transfer TODO: do this within 160 cycles
-		assert(sizeof(memory.oam) == 0xA0);
-		u8 *src = memory.map(value<<8);
-		memcpy((void*)&memory.oam, src, 0xA0);
+		u16 src_address = value<<8;
+		memory.DMAtoOAM(src_address);
 	} break;
 	default: break;
 	}
@@ -2291,39 +2330,71 @@ u8 Memory::load8(u16 address) {
 }
 
 void Memory::store8(u16 address, u8 value) {
-	if ((address >= ADR_IO && address < ADR_IO+SIZE_IO) || address == ADR_IE) {
-		value = gb->onIOWrite(address - ADR_IO, value);
-	}
-	if (address < ADR_CART_BANK0 + 2*SIZE_ROM_BANK) { // rom
-		if (address == 0x2000) { // switch bank
-			assert(value * SIZE_ROM_BANK < rom_size);
-			rom_bank1 = &rom[value * SIZE_ROM_BANK];
-		} else {
-			LOGI("attempt to write 0x%02X to ROM at 0x%04X", value, address);
-		}
+	if (address < ADR_ROM_BANK0 + 2*SIZE_ROM_BANK) { // ROM
+		(this->*mbc)(address, value);
 	} else {
+		if ((address >= ADR_IO && address < ADR_IO+SIZE_IO) || address == ADR_IE) {
+			value = gb->onIOWrite(address - ADR_IO, value);
+		}
 		*map(address) = value;
 	}
+}
+
+void Memory::mbc0(u16 address, u8 value) {
+	switch (address>>13) {
+	case 0x1: // 0x2000 - 0x3FFF
+		assert(value * SIZE_ROM_BANK < rom_size);
+		rom_bank1 = &rom[value * SIZE_ROM_BANK];
+		break;
+	default:
+		LOGW("attempt to write 0x%02X to ROM at 0x%04X", value, address);
+	}
+}
+
+void Memory::mbc3(u16 address, u8 value) {
+	switch (address>>13) {
+	case 0x0: // 0x0000 - 0x1FFF enable/disable SRAM
+		// 4 lower bits are 0: disable SRAM, 0xA: enable SRAM
+		sram_enabled = (value&0xF) == 0xA;
+		break;
+	case 0x1: // 0x2000 - 0x3FFF switch ROM bank 1
+		if (!value) value = 1;
+		assert(value * SIZE_ROM_BANK < rom_size);
+		rom_bank1 = &rom[value * SIZE_ROM_BANK];
+		break;
+	case 0x2: // 0x4000 - 0x5FFF switch SRAM bank
+		if (value < 4) {
+			sram_bank = &sram[value * SIZE_RAM]; // SIZE_RAM_BANK
+		} // else RTC
+		break;
+	case 0x3: // 0x6000 - 0x7FFF ROM/RAM mode
+		break;
+	}
+}
+
+void Memory::DMAtoOAM(u16 src_address) {
+	// instant DMA transfer TODO: do this within 160 cycles
+	assert(sizeof(oam) == SIZE_OAM);
+	u8 *src = map(src_address);
+	memcpy((void*)&oam, src, SIZE_OAM);
 }
 
 u8 *Memory::map(u16 address) {
 	if (address < sizeof(boot_rom) && !io.BOOT) {
 		return &boot_rom[address];
-	} else if (address >= ADR_CART_BANK0
-		    && address <  ADR_CART_BANK0 + SIZE_ROM_BANK) {
-		return &rom_bank0[address - ADR_CART_BANK0];
-	} else if (address >= ADR_CART_BANK1
-		    && address <  ADR_CART_BANK1 + SIZE_ROM_BANK) {
-		return &rom_bank1[address - ADR_CART_BANK1];
+	} else if (address >= ADR_ROM_BANK0
+		    && address <  ADR_ROM_BANK0 + SIZE_ROM_BANK) {
+		return &rom_bank0[address - ADR_ROM_BANK0];
+	} else if (address >= ADR_ROM_BANK1
+		    && address <  ADR_ROM_BANK1 + SIZE_ROM_BANK) {
+		return &rom_bank1[address - ADR_ROM_BANK1];
 	} else if (address >= ADR_VRAM
 		    && address <  ADR_VRAM + SIZE_VRAM) {
 		return &vram[address - ADR_VRAM];
 	} else if (address >= ADR_RAM_EXTERNAL
 		    && address <  ADR_RAM_EXTERNAL + SIZE_RAM) {
-		LOGE("sram not implemented");
-		gb->cpu.DEBUG_not_implemented_error = true;
-	 	static u8 sram = 0; // unimplemented
-	 	return &sram;
+		assert(address - ADR_RAM_EXTERNAL < sram_size);
+		return &sram_bank[address - ADR_RAM_EXTERNAL];
 	} else if (address >= ADR_RAM_INTERNAL_BANK0
 		    && address <  ADR_RAM_INTERNAL_BANK0 + SIZE_RAM) {
 		return &ram[address - ADR_RAM_INTERNAL_BANK0];
@@ -2338,12 +2409,11 @@ u8 *Memory::map(u16 address) {
 		static u8 empty = 0;
 		return &empty;
 	} else if (address >= ADR_IO && address < ADR_HRAM) {
-		//LOGI("accessing IO at 0x%04X", address);
 		return &((u8*)&io)[address - ADR_IO];
 	} else if (address >= ADR_HRAM
 		    && address <  ADR_HRAM + SIZE_HRAM) {
 		return &hram[address - ADR_HRAM];
-	} else if (address == ADR_IE) { // interrupt enable register
+	} else if (address == ADR_IE) {
 		return &io.IE;
 	} else {
 		LOGE("address space not implemented 0x%04X", address);
@@ -2382,19 +2452,105 @@ bool CartridgeHeader::isChecksumCorrect() {
 }
 
 void GameBoy::loadROM(const char *filepath) {
-	memory.rom_bank0 = nullptr;
-	memory.rom_bank1 = nullptr;
-	if (memory.rom) { delete [] memory.rom; }
-	memory.rom = readDataFromFile(filepath, &memory.rom_size);
-	if (!memory.rom) return;
-	CartridgeHeader *header = (CartridgeHeader*)(memory.rom+0x100);
+	memory.loadROM(filepath);
+	if (memory.rom) { // success
+		cpu.reset();
+		ppu.reset();
+	}
+}
+
+void Memory::loadROM(const char *filepath) {
+	init(); // reinit the memory
+
+	rom = readDataFromFile(filepath, &rom_size);
+	if (!rom) {
+		rom_size = 0;
+		return;
+	}
+
+	CartridgeHeader *header = (CartridgeHeader*)(rom+0x100);
 	if (!header->isChecksumCorrect()) {
 		LOGE("cartridge has incorrect checksum");
-		exit(2);
+		delete [] rom;
+		rom = nullptr;
+		return;
 	}
-	memory.rom_bank0 = memory.rom;
-	memory.rom_bank1 = memory.rom+SIZE_ROM_BANK;
-	//LOGI("cartridge type: 0x%02X", header->cartridge_type);
+
+	rom_bank0 = rom;
+	rom_bank1 = rom+SIZE_ROM_BANK;
+
+	// set MBC
+	switch (header->cartridge_type) {
+	case 0x00: // ROM
+	case 0x08: // ROM+RAM
+	case 0x09: // ROM+RAM+BATTERY
+		mbc = &Memory::mbc0;
+		break;
+	case 0x01: // MBC1
+	case 0x02: // MBC1+RAM
+	case 0x03: // MBC1+RAM+BATTERY
+		LOGW("MBC1 not implemented");
+		break;
+	case 0x05: // MBC2
+	case 0x06: // MBC2+BATTERY
+		LOGW("MBC2 not implemented");
+		break;
+	case 0x0B: // MMM01
+	case 0x0C: // MMM01+RAM
+	case 0x0D: // MMM01+RAM+BATTERY
+		break;
+	case 0x0F: // MBC3+TIMER+BATTERY
+	case 0x10: // MBC3+TIMER+RAM+BATTERY
+	case 0x11: // MBC3
+	case 0x12: // MBC3+RAM
+	case 0x13: // MBC3+RAM+BATTERY
+		mbc = &Memory::mbc3;
+		break;
+	case 0x15: // MBC4
+	case 0x16: // MBC4+RAM
+	case 0x17: // MBC4+RAM+BATTERY
+		LOGW("MBC4 not implemented");
+		break;
+	case 0x19: // MBC5
+	case 0x1A: // MBC5+RAM
+	case 0x1B: // MBC5+RAM+BATTERY
+	case 0x1C: // MBC5+RUMBLE
+	case 0x1D: // MBC5+RUMBLE+RAM
+	case 0x1E: // MBC5+RUMBLE+RAM+BATTERY
+		LOGW("MBC5 not implemented");
+		break;
+	case 0xFC: // POCKET CAMERA
+		LOGW("POCKET CAMERA not implemented");
+		break;
+	case 0xFD: // BANDAI TAMA5
+		LOGW("BANDAI TAMA5 not implemented");
+		break;
+	case 0xFE: // HuC3
+		LOGW("HuC3 not implemented");
+		break;
+	case 0xFF: // HuC1+RAM+BATTERY
+		LOGW("HuC1 not implemented");
+		break;
+	default:
+		LOGE("unknown cartridge type 0x%02X", header->cartridge_type);
+		delete [] rom;
+		rom = nullptr;
+		return;
+	}
+
+	// allocate SRAM
+	switch (header->ram_size) {
+	case 0x00: sram_size = 0x0000; break; // none
+	case 0x01: sram_size = 0x0800; break; //  2 kB
+	case 0x02: sram_size = 0x2000; break; //  8 kB
+	case 0x03: sram_size = 0x8000; break; // 32 kB
+	default: LOGW("unknown cartridge ram type", header->ram_size);
+	}
+	if (sram_size) {
+		sram = new u8[sram_size];
+		memset(sram, 0, sram_size);
+	}
+	sram_bank = sram;
 }
 
 void CPU::reset() {
