@@ -17,8 +17,6 @@ void App::init() {
 	assert(dmg_rom_size == sizeof(gb.memory.boot_rom));
 	memcpy(gb.memory.boot_rom, dmg_rom, dmg_rom_size);
 
-	gb.loadROM("tetris.gb");
-
 	gb.init();
 
 	glGenTextures(1, &lcd_tex);
@@ -62,6 +60,12 @@ void cpuGUI(GameBoy *gb) {
 	ImGui::SameLine();
 	if (ImGui::Button("Load")) {
 		gb->loadROM(rom_filepath);
+	}
+	if (gb->memory.sram_size > 0 && ImGui::Button("Write SRAM")) {
+		char sram_filepath[256];
+		strcpy(sram_filepath, rom_filepath);
+		strcpy(strrchr(sram_filepath, '.'), ".sav");
+		writeDataToFile(sram_filepath, gb->memory.sram, gb->memory.sram_size);
 	}
 
 	if (ImGui::Button("Reset")) gb->reset();

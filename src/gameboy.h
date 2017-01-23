@@ -2398,7 +2398,7 @@ void Memory::mbc3(u16 address, u8 value) {
 		sram_enabled = (value&0xF) == 0xA;
 		break;
 	case 0x1: // 0x2000 - 0x3FFF switch ROM bank 1
-		assert(value > 0);
+		if (!value) value = 1;
 		assert(value * SIZE_ROM_BANK < rom_size);
 		rom_bank1 = &rom[value * SIZE_ROM_BANK];
 		break;
@@ -2586,8 +2586,21 @@ void Memory::loadROM(const char *filepath) {
 	default: LOGW("unknown cartridge ram type", header->ram_size);
 	}
 	if (sram_size) {
-		sram = new u8[sram_size];
-		memset(sram, 0, sram_size);
+		// check for sav file
+		char sram_filepath[256];
+		strcpy(sram_filepath, filepath);
+		strcpy(strrchr(sram_filepath, '.'), ".sav");
+		size_t sram_filesize;
+		sram = readDataFromFile(sram_filepath, &sram_filesize);
+		if (sram && sram_filesize != sram_size) {
+			delete [] sram;
+			sram = nullptr;
+		}
+		// no sav file
+		if (!sram) {
+			sram = new u8[sram_size];
+			memset(sram, 0, sram_size);
+		}
 	}
 	sram_bank = sram;
 }
