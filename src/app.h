@@ -4,9 +4,10 @@ struct App {
 
 	GameBoy gb;
 
-	GLuint framebuffer_tex;
+	GLuint lcd_tex;
 	GLuint tiles_tex;
-	GLuint map_tex;
+	GLuint bg_map_tex;
+	GLuint window_map_tex;
 
 	void init();
 	void update();

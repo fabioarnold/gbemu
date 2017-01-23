@@ -2,8 +2,6 @@
 TODO:
 DMA within 160 cycles (not instant)
 8x16 sprites
-the PPU window
-sprite/bg priorities
 LCD stat interrupts
 input interrupt
 audio
@@ -2090,7 +2088,10 @@ void PPU::step() {
 	switch (state) {
 	case PPU_STATE_OAM_SEARCH:
 	{
+		// find the next leftmost obj
+		int min_obj = -1;
 		int min_x = 0; // 0=invisible
+		int max_x = LCD_WIDTH+8;
 		if (line_obj_count > 0) {
 			min_x = oam->objs[line_objs[line_obj_count-1]].x;
 		}
@@ -2099,13 +2100,25 @@ void PPU::step() {
 			if (line_obj_count >= ARRAY_COUNT(line_objs)) break;
 			if (oam->objs[i].x == 0) continue; // invisible
 			if (oam->objs[i].x < min_x) continue;
-			if (line_obj_count > 0 && i == line_objs[line_obj_count-1]) continue;
 			if (io->LY+16 >= oam->objs[i].y
 			 && io->LY+16 <  oam->objs[i].y+obj_h) {
-				line_objs[line_obj_count++] = i;
-				break;
+				if (oam->objs[i].x <= max_x) { // last wins
+					bool in_line_buf = false;
+					for (int j = 0; j < line_obj_count; j++) {
+						if (line_objs[j] == i) {
+							in_line_buf = true;
+							break;
+						}
+					}
+					if (in_line_buf) continue;
+					max_x = oam->objs[i].x;
+					min_obj = i;
+				}
 			}
 		}
+
+		// we found an obj
+		if (min_obj != -1) line_objs[line_obj_count++] = min_obj;
 
 		io->STAT_mode = 2; // OAM search
 		if (cycle_count - cycle_begin >= OAM_SEARCH_CYCLES) {
@@ -2131,8 +2144,9 @@ void PPU::step() {
 		}
 		u8 *palettes[] = { BGP, OBP0, OBP1 };
 		// vram addresses
-		int map_adr  = io->LCDC_bg_tile_map ? 0x1C00 : 0x1800;
-		int tile_adr = io->LCDC_tile_data   ? 0x0000 : 0x1000;
+		int window_map_adr = io->LCDC_window_tile_map ? 0x1C00 : 0x1800;
+		int bg_map_adr     = io->LCDC_bg_tile_map ? 0x1C00 : 0x1800;
+		int tile_adr       = io->LCDC_tile_data   ? 0x0000 : 0x1000;
 
 		int LY = io->LY;
 		assert(LY >= 0 && LY < LCD_HEIGHT);
@@ -2144,6 +2158,12 @@ void PPU::step() {
 			// discard pixels (subtile scrolling)
 			if (LX == 0) pixel_fifo_begin += io->SCX&0x7;
 
+			if (io->LCDC_window_enable
+			 && io->LY >= io->WY && (LX+7 == io->WX || io->WX < 7))
+			{
+				pixel_fifo_begin = pixel_fifo_end; // clear fifo
+			}
+
 			// less than 8 pixels in the fifo
 			while (pixel_fifo_end - pixel_fifo_begin < 8) {
 				int fifo_pos = pixel_fifo_end - pixel_fifo_begin;
@@ -2151,15 +2171,30 @@ void PPU::step() {
 
 				u8 llb = 0; // line low bits
 				u8 lhb = 0; // line high bits
-				// fetch bg tile
-				if (io->LCDC_bg_enable) {
+
+				if (io->LCDC_window_enable
+				 && LX+7 >= io->WX && io->LY >= io->WY)
+				{
+					// fetch window tile
+					int sy = io->LY - io->WY;
+					int sx = LX+7 - io->WX + fifo_pos;
+					int ty = sy/8;
+					int tx = sx/8;
+					int ti = io->LCDC_tile_data ?
+						vram[window_map_adr+ty*0x20+tx] :
+						((s8*)vram)[window_map_adr+ty*0x20+tx]; // signed
+					// line with high and low bits
+					llb = vram[tile_adr+2*(8*ti+(sy&0x7))+0];
+					lhb = vram[tile_adr+2*(8*ti+(sy&0x7))+1];
+				} else if (io->LCDC_bg_enable) {
+					// fetch bg tile
 					int sy = (LY + io->SCY) & 0xFF;
 					int sx = (LX + io->SCX + fifo_pos) & 0xFF;
 					int ty = sy/8;
 					int tx = sx/8;
 					int ti = io->LCDC_tile_data ?
-						vram[map_adr+ty*0x20+tx] :
-						((s8*)vram)[map_adr+ty*0x20+tx]; // signed
+						vram[bg_map_adr+ty*0x20+tx] :
+						((s8*)vram)[bg_map_adr+ty*0x20+tx]; // signed
 					// line with high and low bits
 					llb = vram[tile_adr+2*(8*ti+(sy&0x7))+0];
 					lhb = vram[tile_adr+2*(8*ti+(sy&0x7))+1];
@@ -2195,6 +2230,10 @@ void PPU::step() {
 						int pixel = (hb<<1) | lb;
 						if (pixel == 0) continue; // transparent
 
+						// test if obj is supposed to be behind bg
+						int bg_pixel = pixel_fifo[(pixel_fifo_begin+x) & 0xF] & 0x3;
+						if (obj->ATTRIB_priority == 1 && bg_pixel > 0) continue;
+
 						pixel_fifo[(pixel_fifo_begin+x) & 0xF] = pixel
 							| ((1+obj->ATTRIB_palette)<<2);
 					}
@@ -2205,6 +2244,7 @@ void PPU::step() {
 
 			int pixel = pixel_fifo[pixel_fifo_begin++ & 0xF];
 			framebuffer[LY*LCD_WIDTH+LX] = palettes[(pixel>>2)&0x3][pixel&0x3];
+			//if (!io->LCDC_enable) framebuffer[LY*LCD_WIDTH+LX] = 0; // TODO: hack!
 
 			LX++;
 		}
@@ -2358,7 +2398,7 @@ void Memory::mbc3(u16 address, u8 value) {
 		sram_enabled = (value&0xF) == 0xA;
 		break;
 	case 0x1: // 0x2000 - 0x3FFF switch ROM bank 1
-		if (!value) value = 1;
+		assert(value > 0);
 		assert(value * SIZE_ROM_BANK < rom_size);
 		rom_bank1 = &rom[value * SIZE_ROM_BANK];
 		break;
@@ -2476,9 +2516,6 @@ void Memory::loadROM(const char *filepath) {
 		return;
 	}
 
-	rom_bank0 = rom;
-	rom_bank1 = rom+SIZE_ROM_BANK;
-
 	// set MBC
 	switch (header->cartridge_type) {
 	case 0x00: // ROM
@@ -2537,6 +2574,8 @@ void Memory::loadROM(const char *filepath) {
 		rom = nullptr;
 		return;
 	}
+	rom_bank0 = rom;
+	rom_bank1 = rom+SIZE_ROM_BANK;
 
 	// allocate SRAM
 	switch (header->ram_size) {

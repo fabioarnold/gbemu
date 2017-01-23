@@ -21,11 +21,11 @@ void App::init() {
 
 	gb.init();
 
-	glGenTextures(1, &framebuffer_tex);
+	glGenTextures(1, &lcd_tex);
 	glGenTextures(1, &tiles_tex);
-	glGenTextures(1, &map_tex);
+	glGenTextures(1, &bg_map_tex);
 
-	glBindTexture(GL_TEXTURE_2D, framebuffer_tex);
+	glBindTexture(GL_TEXTURE_2D, lcd_tex);
 	setFilterTexture2D(GL_NEAREST, GL_NEAREST);
 	setWrapTexture2D(GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
 	glTexImage2D(GL_TEXTURE_2D, /*level*/0, GL_RGB8, LCD_WIDTH, LCD_HEIGHT,
@@ -37,7 +37,13 @@ void App::init() {
 	glTexImage2D(GL_TEXTURE_2D, /*level*/0, GL_RGB8, 16*8, 24*8,
 		/*border*/0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
 
-	glBindTexture(GL_TEXTURE_2D, map_tex);
+	glBindTexture(GL_TEXTURE_2D, bg_map_tex);
+	setFilterTexture2D(GL_NEAREST, GL_NEAREST);
+	setWrapTexture2D(GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
+	glTexImage2D(GL_TEXTURE_2D, /*level*/0, GL_RGB8, 32*8, 32*8,
+		/*border*/0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+
+	glBindTexture(GL_TEXTURE_2D, window_map_tex);
 	setFilterTexture2D(GL_NEAREST, GL_NEAREST);
 	setWrapTexture2D(GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
 	glTexImage2D(GL_TEXTURE_2D, /*level*/0, GL_RGB8, 32*8, 32*8,
@@ -77,6 +83,12 @@ void cpuGUI(GameBoy *gb) {
 				gb->running = false;
 			}
 		} while (!gb->ppu.vsync);
+	}
+	if (ImGui::Button("Next Scanline")) {
+		int ly = gb->memory.io.LY;
+		do {
+			gb->step();
+		} while (gb->memory.io.LY == ly);
 	}
 	static int break_frame = 0;
 	if (ImGui::Button("Run to ")) {
@@ -124,10 +136,13 @@ void cpuGUI(GameBoy *gb) {
 
 	ImGui::Text("Flags:");
 	u32 flags = cpu->F;
-	ImGui::CheckboxFlags("Zero", &flags, 0x80);
-	ImGui::CheckboxFlags("Substract", &flags, 0x40);
-	ImGui::CheckboxFlags("Half carry", &flags, 0x20);
-	ImGui::CheckboxFlags("Carry", &flags, 0x10);
+	ImGui::CheckboxFlags("Z", &flags, 0x80);
+	ImGui::SameLine();
+	ImGui::CheckboxFlags("N", &flags, 0x40);
+	ImGui::SameLine();
+	ImGui::CheckboxFlags("H", &flags, 0x20);
+	ImGui::SameLine();
+	ImGui::CheckboxFlags("C", &flags, 0x10);
 	cpu->F = flags;
 	ImGui::End();
 }
@@ -177,6 +192,19 @@ void ppuGUI(PPU *ppu) {
 	ImGui::Text("WX  0x%02X", io->WX);
 	ImGui::Text("VBK 0x%02X", io->VBK);
 
+	ImGui::End();
+}
+
+void oamWindow(OAM *oam) {
+	ImGui::Begin("OAM");
+	ImGui::Columns(8);
+	//ImGui::Text("y    x    tile attrib");
+	for (int i = 0; i < ARRAY_COUNT(oam->objs); i++) {
+		OAM::OBJ *obj = &oam->objs[i];
+		ImGui::Text("0x%02X\n0x%02X\n0x%02X\n0x%02X",
+			obj->y, obj->x, obj->tile, obj->attrib);
+		ImGui::NextColumn();
+	}
 	ImGui::End();
 }
 
@@ -243,12 +271,10 @@ void App::updateGLTextures() {
 		}
 	}
 #endif
-	glBindTexture(GL_TEXTURE_2D, framebuffer_tex);
+	glBindTexture(GL_TEXTURE_2D, lcd_tex);
 	glTexSubImage2D(GL_TEXTURE_2D, /*level*/0, /*x*/0, /*y*/0,
 		LCD_WIDTH, LCD_HEIGHT, GL_RGB, GL_UNSIGNED_BYTE, pixels);
 	
-	int map_adr = gb.memory.io.LCDC_bg_tile_map ?
-		0x1C00 : 0x1800;
 	int tile_adr = gb.memory.io.LCDC_tile_data ?
 		0x0000 : 0x1000;
 
@@ -276,10 +302,12 @@ void App::updateGLTextures() {
 		16*8, 24*8, GL_RGB, GL_UNSIGNED_BYTE, tile_pixels);
 
 	u8 map_pixels[32*32*8*8*3];
+	int map_adr = gb.memory.io.LCDC_bg_tile_map ?
+		0x1C00 : 0x1800;
 	for (int ty = 0; ty < 0x20; ty++) {
 		for (int tx = 0; tx < 0x20; tx++) {
 			int ti = gb.memory.io.LCDC_tile_data ?
-				gb.memory.vram[map_adr+ty*0x20+tx] : 
+				gb.memory.vram[map_adr+ty*0x20+tx] :
 				((s8*)gb.memory.vram)[map_adr+ty*0x20+tx]; // signed
 			for (int y = 0; y < 8; y++) {
 				// line with high and low bits
@@ -297,7 +325,34 @@ void App::updateGLTextures() {
 			}
 		}
 	}
-	glBindTexture(GL_TEXTURE_2D, map_tex);
+	glBindTexture(GL_TEXTURE_2D, bg_map_tex);
+	glTexSubImage2D(GL_TEXTURE_2D, /*level*/0, /*x*/0, /*y*/0,
+		32*8, 32*8, GL_RGB, GL_UNSIGNED_BYTE, map_pixels);
+
+	map_adr = gb.memory.io.LCDC_window_tile_map ?
+		0x1C00 : 0x1800;
+	for (int ty = 0; ty < 0x20; ty++) {
+		for (int tx = 0; tx < 0x20; tx++) {
+			int ti = gb.memory.io.LCDC_tile_data ?
+				gb.memory.vram[map_adr+ty*0x20+tx] :
+				((s8*)gb.memory.vram)[map_adr+ty*0x20+tx]; // signed
+			for (int y = 0; y < 8; y++) {
+				// line with high and low bits
+				u8 llb = gb.memory.vram[tile_adr + 2*(8*ti+y)+0];
+				u8 lhb = gb.memory.vram[tile_adr + 2*(8*ti+y)+1];
+				for (int x = 0; x < 8; x++) {
+					int palette_idx = (llb >> (7-x)) & 0x1;
+					palette_idx |= ((lhb >> (7-x)) & 0x1) << 1;
+
+					u8 *map = &map_pixels[3*(32*8*(8*ty+y)+8*tx+x)];
+					map[0] = palette[palette_idx][0];
+					map[1] = palette[palette_idx][1];
+					map[2] = palette[palette_idx][2];
+				}
+			}
+		}
+	}
+	glBindTexture(GL_TEXTURE_2D, window_map_tex);
 	glTexSubImage2D(GL_TEXTURE_2D, /*level*/0, /*x*/0, /*y*/0,
 		32*8, 32*8, GL_RGB, GL_UNSIGNED_BYTE, map_pixels);
 
@@ -318,6 +373,7 @@ void App::update() {
 	cpuGUI(&gb);
 	ppuGUI(&gb.ppu);
 	ioGUI(&gb.memory.io);
+	oamWindow(&gb.memory.oam);
 
 	while (gb.running) {
 		if (gb.cpu.DEBUG_not_implemented_error) {
@@ -334,14 +390,18 @@ void App::update() {
 
 	updateGLTextures();
 
-	static MyImTexture tex0, tex1, tex2;
+	static MyImTexture tex0, tex1, tex2, tex3;
 	tex0.target = GL_TEXTURE_2D;
 	tex1.target = GL_TEXTURE_2D;
 	tex2.target = GL_TEXTURE_2D;
+	tex3.target = GL_TEXTURE_2D;
 
 	ImGui::Begin("LCD");
-	tex0.id = framebuffer_tex;
-	ImGui::Image((ImTextureID)&tex0, ImVec2(LCD_WIDTH, LCD_HEIGHT));
+	tex0.id = lcd_tex;
+	int scale_x = (ImGui::GetWindowWidth()-10) / LCD_WIDTH;
+	int scale_y = (ImGui::GetWindowHeight()-30) / LCD_HEIGHT;
+	int scale = imax(1, imin(scale_x, scale_y));
+	ImGui::Image((ImTextureID)&tex0, ImVec2(scale*LCD_WIDTH, scale*LCD_HEIGHT));
 	ImGui::End();
 
 	ImGui::Begin("Tiles");
@@ -350,7 +410,12 @@ void App::update() {
 	ImGui::End();
 
 	ImGui::Begin("BG Map");
-	tex2.id = map_tex;
+	tex2.id = bg_map_tex;
 	ImGui::Image((ImTextureID)&tex2, ImVec2(32*8, 32*8));
+	ImGui::End();
+
+	ImGui::Begin("Window Map");
+	tex3.id = window_map_tex;
+	ImGui::Image((ImTextureID)&tex3, ImVec2(32*8, 32*8));
 	ImGui::End();
 }
