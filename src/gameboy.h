@@ -2,12 +2,12 @@
 TODO:
 DMA within 160 cycles (not instant)
 8x16 sprites
-LCD stat interrupts
 input interrupt
+serial interrupt
 audio
 serial
-memory bank controllers
-save/load SRAM
+memory bank controllers MBC1 √ MBC3 MBC5
+actually guard SRAM if sram_enabled becomes false
 halt/stop behavior
 LCD disable
 */
@@ -67,13 +67,13 @@ struct OAM {
 		union {
 			u8 attrib;
 			struct {
-				u8 ATTRIB_cgb_palette : 3;
-				u8 ATTRIB_cgb_vram_bank : 1;
-				u8 ATTRIB_palette : 1;
-				u8 ATTRIB_flip_x : 1;
-				u8 ATTRIB_flip_y : 1;
+				u8 attrib_cgb_palette   : 3;
+				u8 attrib_cgb_vram_bank : 1;
+				u8 attrib_palette       : 1;
+				u8 attrib_flip_x        : 1;
+				u8 attrib_flip_y        : 1;
 				// 0=OBJ above BG, 1 OBJ behind (but above pixel value 0)
-				u8 ATTRIB_priority : 1;
+				u8 attrib_priority      : 1;
 			};
 		};
 	} objs[OBJ_COUNT];
@@ -288,7 +288,12 @@ struct Memory {
 	typedef void (Memory::*MBC)(u16 address, u8 value);
 	MBC mbc; // set on loadROM
 	void mbc0(u16 address, u8 value); // dummy MBC
+	void mbc1(u16 address, u8 value);
 	void mbc3(u16 address, u8 value);
+	void mbc5(u16 address, u8 value);
+
+	void setROMBank(u8 bank);
+	void setSRAMBank(u8 bank);
 
 	GameBoy *gb;
 private:
@@ -2218,24 +2223,24 @@ void PPU::step() {
 
 					// blit obj over the first 8 pixel in the fifo
 					int sy = (LY - obj->y) & 0x7;
-					if (obj->ATTRIB_flip_y) sy = 7-sy;
+					if (obj->attrib_flip_y) sy = 7-sy;
 					// line with high and low bits
 					u8 llb = vram[2*(8*obj->tile+sy)+0];
 					u8 lhb = vram[2*(8*obj->tile+sy)+1];
 
 					for (int x = 0; x < 8; x++) {
-						int shift = obj->ATTRIB_flip_x ? x : (7-x);
+						int shift = obj->attrib_flip_x ? x : (7-x);
 						int lb = (llb >> shift) & 0x1;
 						int hb = (lhb >> shift) & 0x1;
 						int pixel = (hb<<1) | lb;
 						if (pixel == 0) continue; // transparent
 
 						// test if obj is supposed to be behind bg
-						int bg_pixel = pixel_fifo[(pixel_fifo_begin+x) & 0xF] & 0x3;
-						if (obj->ATTRIB_priority == 1 && bg_pixel > 0) continue;
+						int bg_pixel = pixel_fifo[(pixel_fifo_begin+x)&0xF]&0x3;
+						if (obj->attrib_priority == 1 && bg_pixel > 0) continue;
 
 						pixel_fifo[(pixel_fifo_begin+x) & 0xF] = pixel
-							| ((1+obj->ATTRIB_palette)<<2);
+							| ((1+obj->attrib_palette)<<2);
 					}
 
 					line_obj_index++; // next
@@ -2253,6 +2258,10 @@ void PPU::step() {
 		//if (cycle_count - cycle_begin >= PIXEL_TRANSFER_CYCLES) {
 		if (LX >= LCD_WIDTH) {
 			state = PPU_STATE_HBLANK;
+			if (io->STAT_hblank_interrupt_enable) {
+				io->IF_lcd_stat = 1;
+				gb->cpu.halted = false;
+			}
 			// don't reset cycle_begin (this state lasts as long as needed)
 		}
 	} break;
@@ -2260,14 +2269,26 @@ void PPU::step() {
 		io->STAT_mode = 0; // H-Blank
 		if (cycle_count - cycle_begin >= PIXEL_TRANSFER_CYCLES + HBLANK_CYCLES) {
 			io->LY++;
+			if (io->STAT_coincide_interrupt_enable && io->LY == io->LYC) {
+				io->IF_lcd_stat = 1;
+				gb->cpu.halted = false;
+			}
 			if (io->LY == LCD_HEIGHT) {
 				state = PPU_STATE_VBLANK;
+				if (io->STAT_vblank_interrupt_enable) {
+					io->IF_lcd_stat = 1;
+					gb->cpu.halted = false;
+				}
 				vsync = true; // do vsync
 				frame_count++;
 				io->IF_vblank = 1; // raise IRQ
 				gb->cpu.halted = false;
 			} else {
 				state = PPU_STATE_OAM_SEARCH;
+				if (io->STAT_oam_interrupt_enable) {
+					io->IF_lcd_stat = 1;
+					gb->cpu.halted = false;
+				}
 				// init oam search
 				line_obj_count = 0;
 			}
@@ -2292,6 +2313,8 @@ void PPU::step() {
 		break;
 	default: break;
 	}
+
+	io->STAT_coincide = io->LY == io->LYC; // TODO: only when LY gets updated
 }
 
 void GameBoy::init() {
@@ -2380,14 +2403,68 @@ void Memory::store8(u16 address, u8 value) {
 	}
 }
 
+void Memory::setROMBank(u8 bank) {
+	assert(bank * SIZE_ROM_BANK < rom_size);
+	rom_bank1 = &rom[bank * SIZE_ROM_BANK];
+}
+
+void Memory::setSRAMBank(u8 bank) {
+	if (!sram_size) {
+		LOGW("trying to set SRAM bank but no SRAM installed");
+		return;
+	}
+	assert(bank * SIZE_RAM < sram_size);
+	sram_bank = &sram[bank * SIZE_RAM]; // SIZE_RAM_BANK
+}
+
 void Memory::mbc0(u16 address, u8 value) {
 	switch (address>>13) {
 	case 0x1: // 0x2000 - 0x3FFF
-		assert(value * SIZE_ROM_BANK < rom_size);
-		rom_bank1 = &rom[value * SIZE_ROM_BANK];
+		setROMBank(1);
 		break;
 	default:
 		LOGW("attempt to write 0x%02X to ROM at 0x%04X", value, address);
+	}
+}
+
+struct MBC1State {
+	u8 lbank : 5;
+	u8 hbank : 2; // bit 5 and 6 used depending on mode
+	u8 mode  : 1; // 0: ROM banking, 1: RAM banking
+} mbc1_state = {0};
+
+void Memory::mbc1(u16 address, u8 value) {
+	switch (address>>13) {
+	case 0x0: // 0x0000 - 0x1FFF enable/disable SRAM
+		// 4 lower bits are 0: disable SRAM, 0xA: enable SRAM
+		sram_enabled = (value&0xF) == 0xA;
+		break;
+	case 0x1: // 0x2000 - 0x3FFF switch ROM bank 1
+		mbc1_state.lbank = value&0x1F;
+		if (!mbc1_state.lbank) mbc1_state.lbank++;
+		if (mbc1_state.mode) { // RAM
+			setROMBank(mbc1_state.lbank);
+		} else { // ROM
+			setROMBank((mbc1_state.hbank<<5) | mbc1_state.lbank);
+		}
+		if (!(value&0x1F)) value++;
+		break;
+	case 0x2: // 0x4000 - 0x5FFF switch SRAM bank/high ROM bank
+		mbc1_state.hbank = value&3;
+		if (mbc1_state.mode) { // RAM
+			setSRAMBank(mbc1_state.hbank);
+		} else { // ROM
+			setROMBank((mbc1_state.hbank<<5) | mbc1_state.lbank);
+		}
+		break;
+	case 0x3: // 0x6000 - 0x7FFF ROM/RAM mode select
+		mbc1_state.mode = value&1;
+		if (mbc1_state.mode) { // RAM banking mode
+			setROMBank(mbc1_state.lbank);
+		} else { // ROM banking mode
+			setSRAMBank(0);
+		}
+		break;
 	}
 }
 
@@ -2433,6 +2510,11 @@ u8 *Memory::map(u16 address) {
 		return &vram[address - ADR_VRAM];
 	} else if (address >= ADR_RAM_EXTERNAL
 		    && address <  ADR_RAM_EXTERNAL + SIZE_RAM) {
+		if (!sram_size) { // TODO: exception for MBC2
+			static u8 null_byte = 0;
+			//LOGW("accessing SRAM but no SRAM installed @ 0x%04X", address);
+			return &null_byte;
+		}
 		assert(address - ADR_RAM_EXTERNAL < sram_size);
 		return &sram_bank[address - ADR_RAM_EXTERNAL];
 	} else if (address >= ADR_RAM_INTERNAL_BANK0
@@ -2526,7 +2608,7 @@ void Memory::loadROM(const char *filepath) {
 	case 0x01: // MBC1
 	case 0x02: // MBC1+RAM
 	case 0x03: // MBC1+RAM+BATTERY
-		LOGW("MBC1 not implemented");
+		mbc = &Memory::mbc1;
 		break;
 	case 0x05: // MBC2
 	case 0x06: // MBC2+BATTERY
@@ -2659,13 +2741,23 @@ void CPU::step() {
 		// TODO: handle more IRQs
 		if (IME) {
 			if (memory->io.IE_vblank && memory->io.IF_vblank) {
+				IME = false;
 				halted = false;
 				address = IRQ_ADR_VBLANK;
 				instruction = &CPU::irq;
 				memory->io.IF_vblank = 0;
 				break;
 			}
+			if (memory->io.IE_lcd_stat && memory->io.IF_lcd_stat) {
+				IME = false;
+				halted = false;
+				address = IRQ_ADR_LCDSTAT;
+				instruction = &CPU::irq;
+				memory->io.IF_lcd_stat = 0;
+				break;
+			}
 			if (memory->io.IE_timer && memory->io.IF_timer) {
+				IME = false;
 				halted = false;
 				address = IRQ_ADR_TIMER;
 				instruction = &CPU::irq;
