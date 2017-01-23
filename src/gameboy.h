@@ -3,6 +3,7 @@ TODO:
 DMA within 160 cycles (not instant)
 8x16 sprites
 the ppu window
+sprite/bg priorities
 lcd stat interrupts
 input interrupt
 audio
@@ -18,9 +19,10 @@ const int RAM_FREQ_HZ  = 1<<20; // 1 MiHz
 const int PPU_FREQ_HZ  = 4<<20; // 4 MiHz
 const int VRAM_FREQ_HZ = 2<<20; // 2 MiHz
 
-const int LCD_WIDTH = 160;
+const int LCD_WIDTH  = 160;
 const int LCD_HEIGHT = 144;
-const int OBJ_COUNT = 40;
+
+const int OBJ_COUNT    = 40;
 const int OBJ_PER_LINE = 10;
 
 // timings
@@ -35,19 +37,28 @@ const int VSYNC_CYCLES = (LCD_HEIGHT + VBLANK_LINES)
 const float VSYNC_HZ = (float)CPU_FREQ_HZ / (float)VSYNC_CYCLES;
 
 // addresses
-const int ADR_CART_BANK0                = 0x0000;
-const int ADR_CART_BANK1                = 0x4000;
-const int ADR_VRAM                      = 0x8000;
-const int ADR_RAM_EXTERNAL              = 0xA000;
-const int ADR_RAM_INTERNAL_BANK0        = 0xC000;
-const int ADR_RAM_INTERNAL_BANK1        = 0xD000;
-const int ADR_RAM_INTERNAL_BANK1_MIRROR = 0xE000;
-const int ADR_OAM                       = 0xFE00;
-const int ADR_EMPTY                     = 0xFEA0;
-const int ADR_UNUSABLE                  = 0xFEA0;
-const int ADR_IO                        = 0xFF00;
-const int ADR_HRAM                      = 0xFF80;
-const int ADR_IE                        = 0xFFFF;
+const int ADR_CART_BANK0          = 0x0000;
+const int ADR_CART_BANK1          = 0x4000;
+const int ADR_VRAM                = 0x8000;
+const int ADR_RAM_EXTERNAL        = 0xA000;
+const int ADR_RAM_INTERNAL_BANK0  = 0xC000;
+const int ADR_RAM_INTERNAL_BANK1  = 0xD000; // CGB: switchable (1-7)
+const int ADR_RAM_INTERNAL_MIRROR = 0xE000;
+const int ADR_OAM                 = 0xFE00;
+const int ADR_EMPTY               = 0xFEA0;
+const int ADR_UNUSABLE            = 0xFEA0;
+const int ADR_IO                  = 0xFF00;
+const int ADR_HRAM                = 0xFF80;
+const int ADR_IE                  = 0xFFFF;
+
+// sizes
+const int SIZE_BOOT_ROM = 0x100;  // DMG
+const int SIZE_ROM_BANK = 0x4000;
+const int SIZE_VRAM     = 0x2000;
+const int SIZE_RAM      = 0x2000;
+const int SIZE_OAM      = 0xA0;
+const int SIZE_IO       = 0x80;
+const int SIZE_HRAM     = 0x7F;
 
 // object attribute memory
 struct OAM {
@@ -250,14 +261,16 @@ struct IO {
 
 struct GameBoy;
 struct Memory {
-	u8 boot_rom[0x100];  // 0x0000
-	u8 *rom = nullptr; // 32kB, 64kB, 128kB, 256kB and 512kB known
+	u8 boot_rom[SIZE_BOOT_ROM]; // 0x0000
+	u8 *rom = nullptr; // 32kB, 64kB, 128kB, 256kB, 512kB and so on
 	size_t rom_size;
-	u8 vram[0x2000];     // 0x8000
-	u8  ram[0x2000];     // 0xC000
-	OAM oam;             // 0xFE00
-	IO io;               // 0xFF00
-	u8 hram[0x7F];       // 0xFF80
+	u8 *rom_bank0 = nullptr;
+	u8 *rom_bank1 = nullptr;
+	u8 vram[SIZE_VRAM]; // 0x8000
+	u8  ram[SIZE_RAM];  // 0xC000
+	OAM oam;            // 0xFE00
+	IO io;              // 0xFF00
+	u8 hram[SIZE_HRAM]; // 0xFF80
 
 	void init();
 
@@ -2271,42 +2284,55 @@ u8 GameBoy::onIOWrite(u16 address, u8 value) {
 }
 
 u8 Memory::load8(u16 address) {
-	if ((address >= ADR_IO && address < ADR_HRAM) || address == ADR_IE) {
-		gb->onIORead(address-ADR_IO);
+	if ((address >= ADR_IO && address < ADR_IO+SIZE_IO) || address == ADR_IE) {
+		gb->onIORead(address - ADR_IO);
 	}
 	return *map(address);
 }
 
 void Memory::store8(u16 address, u8 value) {
-	if ((address >= ADR_IO && address < ADR_HRAM) || address == ADR_IE) {
-		value = gb->onIOWrite(address-ADR_IO, value);
+	if ((address >= ADR_IO && address < ADR_IO+SIZE_IO) || address == ADR_IE) {
+		value = gb->onIOWrite(address - ADR_IO, value);
 	}
-	*map(address) = value;
+	if (address < ADR_CART_BANK0 + 2*SIZE_ROM_BANK) { // rom
+		if (address == 0x2000) { // switch bank
+			assert(value * SIZE_ROM_BANK < rom_size);
+			rom_bank1 = &rom[value * SIZE_ROM_BANK];
+		} else {
+			LOGI("attempt to write 0x%02X to ROM at 0x%04X", value, address);
+		}
+	} else {
+		*map(address) = value;
+	}
 }
 
 u8 *Memory::map(u16 address) {
-	if (address < sizeof(boot_rom) && !io.BOOT) { // BOOT ROM
+	if (address < sizeof(boot_rom) && !io.BOOT) {
 		return &boot_rom[address];
-	} else if (address < ADR_CART_BANK1) { // CART BANK0
-		return &rom[address];
-	} else if (address < ADR_VRAM) { // CART BANK1
-		//LOGE("CART BANK1 not implemented");
-		return &rom[address];
-	} else if (address < ADR_RAM_EXTERNAL) { // VRAM
-		//LOGI("accessing VRAM at 0x%04X", address);
+	} else if (address >= ADR_CART_BANK0
+		    && address <  ADR_CART_BANK0 + SIZE_ROM_BANK) {
+		return &rom_bank0[address - ADR_CART_BANK0];
+	} else if (address >= ADR_CART_BANK1
+		    && address <  ADR_CART_BANK1 + SIZE_ROM_BANK) {
+		return &rom_bank1[address - ADR_CART_BANK1];
+	} else if (address >= ADR_VRAM
+		    && address <  ADR_VRAM + SIZE_VRAM) {
 		return &vram[address - ADR_VRAM];
 	} else if (address >= ADR_RAM_EXTERNAL
-	 && address < ADR_RAM_INTERNAL_BANK0) { // external RAM
+		    && address <  ADR_RAM_EXTERNAL + SIZE_RAM) {
+		LOGE("sram not implemented");
+		gb->cpu.DEBUG_not_implemented_error = true;
 	 	static u8 sram = 0; // unimplemented
 	 	return &sram;
 	} else if (address >= ADR_RAM_INTERNAL_BANK0
-	 && address < ADR_RAM_INTERNAL_BANK1_MIRROR) {
-		//LOGI("accessing RAM at 0x%04X", address);
+		    && address <  ADR_RAM_INTERNAL_BANK0 + SIZE_RAM) {
 		return &ram[address - ADR_RAM_INTERNAL_BANK0];
-	} else if (address >= ADR_RAM_INTERNAL_BANK1_MIRROR && address < ADR_OAM) {
+	} else if (address >= ADR_RAM_INTERNAL_MIRROR
+		    && address <  ADR_OAM) { // size != SIZE_RAM
 		LOGI("accessing RAM (echo) at 0x%04X", address);
-		return &ram[address - ADR_RAM_INTERNAL_BANK1_MIRROR];
-	} else if (address >= ADR_OAM && address < ADR_EMPTY) {
+		return &ram[address - ADR_RAM_INTERNAL_MIRROR];
+	} else if (address >= ADR_OAM
+		    && address < ADR_OAM + SIZE_OAM) {
 		return &((u8*)&oam)[address - ADR_OAM];
 	} else if (address >= ADR_EMPTY && address < ADR_IO) {
 		static u8 empty = 0;
@@ -2314,7 +2340,8 @@ u8 *Memory::map(u16 address) {
 	} else if (address >= ADR_IO && address < ADR_HRAM) {
 		//LOGI("accessing IO at 0x%04X", address);
 		return &((u8*)&io)[address - ADR_IO];
-	} else if (address >= ADR_HRAM && address < ADR_IE) {
+	} else if (address >= ADR_HRAM
+		    && address <  ADR_HRAM + SIZE_HRAM) {
 		return &hram[address - ADR_HRAM];
 	} else if (address == ADR_IE) { // interrupt enable register
 		return &io.IE;
@@ -2355,6 +2382,8 @@ bool CartridgeHeader::isChecksumCorrect() {
 }
 
 void GameBoy::loadROM(const char *filepath) {
+	memory.rom_bank0 = nullptr;
+	memory.rom_bank1 = nullptr;
 	if (memory.rom) { delete [] memory.rom; }
 	memory.rom = readDataFromFile(filepath, &memory.rom_size);
 	if (!memory.rom) return;
@@ -2363,6 +2392,8 @@ void GameBoy::loadROM(const char *filepath) {
 		LOGE("cartridge has incorrect checksum");
 		exit(2);
 	}
+	memory.rom_bank0 = memory.rom;
+	memory.rom_bank1 = memory.rom+SIZE_ROM_BANK;
 	//LOGI("cartridge type: 0x%02X", header->cartridge_type);
 }
 
@@ -2443,9 +2474,7 @@ void CPU::step() {
 		bus = memory->load8(address);
 		break;
 	case CPU_STATE_MEMORY_STORE:
-		if (address != 0x2000 && address >= 0x8000) { // TODO: rom select
-			memory->store8(address, bus);
-		}
+		memory->store8(address, bus);
 		break;
 	case CPU_STATE_READ_PC:
 		bus = memory->load8(PC++);
