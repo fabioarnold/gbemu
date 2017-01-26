@@ -2476,12 +2476,11 @@ void Memory::mbc3(u16 address, u8 value) {
 		break;
 	case 0x1: // 0x2000 - 0x3FFF switch ROM bank 1
 		if (!value) value = 1;
-		assert(value * SIZE_ROM_BANK < rom_size);
-		rom_bank1 = &rom[value * SIZE_ROM_BANK];
+		setROMBank(value);
 		break;
 	case 0x2: // 0x4000 - 0x5FFF switch SRAM bank
 		if (value < 4) {
-			sram_bank = &sram[value * SIZE_RAM]; // SIZE_RAM_BANK
+			setSRAMBank(value);
 		} // else RTC
 		break;
 	case 0x3: // 0x6000 - 0x7FFF ROM/RAM mode
@@ -2747,16 +2746,14 @@ void CPU::step() {
 				instruction = &CPU::irq;
 				memory->io.IF_vblank = 0;
 				break;
-			}
-			if (memory->io.IE_lcd_stat && memory->io.IF_lcd_stat) {
+			} else if (memory->io.IE_lcd_stat && memory->io.IF_lcd_stat) {
 				IME = false;
 				halted = false;
 				address = IRQ_ADR_LCDSTAT;
 				instruction = &CPU::irq;
 				memory->io.IF_lcd_stat = 0;
 				break;
-			}
-			if (memory->io.IE_timer && memory->io.IF_timer) {
+			} else if (memory->io.IE_timer && memory->io.IF_timer) {
 				IME = false;
 				halted = false;
 				address = IRQ_ADR_TIMER;
