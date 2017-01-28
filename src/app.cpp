@@ -368,31 +368,6 @@ struct MyImTexture {
 	GLuint id;
 };
 
-void renderAudio() {
-	float samples[4096];
-
-	u32 bytes_queued = SDL_GetQueuedAudioSize(audio_device);
-	int samples_queued = (int)(bytes_queued/sizeof(float));
-
-	int samples_per_frame = AUDIO_SAMPLE_RATE / 60; // TODO: replace with actual frame rate
-	//samples_per_frame = 2048;
-
-	int samples_to_generate = 2*samples_per_frame - samples_queued;
-	assert(samples_to_generate <= ARRAY_COUNT(samples));
-
-	const float sin_period = 2.0f * M_PI;
-	float freq = 440.0f;
-	float volume = 0.0f;
-	static u64 t = 0;
-	for (int i = 0; i < samples_to_generate; i++) {
-		float f = sin_period * freq / (float)AUDIO_SAMPLE_RATE;
-		samples[i] = volume * sinf(t++ * f);
-	}
-	//LOGI("rendered %d samples", samples_to_generate);
-
-	SDL_QueueAudio(audio_device, (void*)samples, sizeof(float)*samples_to_generate);
-}
-
 void App::update() {
 	glClear(GL_COLOR_BUFFER_BIT);
 	if (gb.memory.rom) rom_editor.Draw("ROM Editor", gb.memory.rom, gb.memory.rom_size);
@@ -404,6 +379,7 @@ void App::update() {
 	ioGUI(&gb.memory.io);
 	oamWindow(&gb.memory.oam);
 
+	gb.frame_begin_cycle_count = gb.cpu.cycle_count;
 	while (gb.running) {
 		if (gb.cpu.DEBUG_not_implemented_error) {
 			gb.cpu.DEBUG_not_implemented_error = false;
@@ -416,9 +392,22 @@ void App::update() {
 		}
 		if (gb.ppu.vsync) break;
 	}
+	u64 frame_cycle_count = gb.cpu.cycle_count - gb.frame_begin_cycle_count;
 
-	renderAudio();
-	SDL_PauseAudioDevice(audio_device, 0); // start playing audio
+	// fill audio buffers
+	bool stereo = gb.apu.end_frame(frame_cycle_count);
+	gb.audio_buffer.end_frame(frame_cycle_count, stereo);
+	blip_sample_t out_buf[4096];
+	int count = gb.audio_buffer.read_samples(out_buf, ARRAY_COUNT(out_buf));
+	static bool drain_buffer = false;
+	u32 bytes_queued = SDL_GetQueuedAudioSize(audio_device);
+	if (bytes_queued > 1<<15) drain_buffer = true;
+	if (!bytes_queued) drain_buffer = false;
+	if (!drain_buffer && count) {
+		SDL_QueueAudio(audio_device, (void*)out_buf, sizeof(s16)*count);
+		SDL_PauseAudioDevice(audio_device, 0); // start playing audio
+	}
+	//ImGui::Text("%u bytes queued", SDL_GetQueuedAudioSize(audio_device));
 
 	updateGLTextures();
 

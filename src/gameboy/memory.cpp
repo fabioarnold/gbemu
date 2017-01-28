@@ -24,13 +24,8 @@ void Memory::reset() {
 	memset(hram, 0, sizeof(hram));
 
 	if (rom) {
-#if 0
-		rom_bank0 = &rom[ADR_ROM_BANK0];
-		rom_bank1 = &rom[ADR_ROM_BANK1];
-#else
 		rom_bank0 = rom;
 		rom_bank1 = rom+SIZE_ROM_BANK;
-#endif
 	}
 
 	if (sram) {
@@ -44,6 +39,10 @@ u8 Memory::load8(u16 address) {
 	if ((address >= ADR_IO && address < ADR_IO+SIZE_IO) || address == ADR_IE) {
 		gb->onIORead(address - ADR_IO);
 	}
+	if (address >= gb->apu.start_addr && address <= gb->apu.end_addr) {
+		u64 frame_cycle_count = gb->cpu.cycle_count - gb->frame_begin_cycle_count;
+		return gb->apu.read_register(frame_cycle_count, address);
+	}
 	return *map(address);
 }
 
@@ -53,6 +52,10 @@ void Memory::store8(u16 address, u8 value) {
 	} else {
 		if ((address >= ADR_IO && address < ADR_IO+SIZE_IO) || address == ADR_IE) {
 			value = gb->onIOWrite(address - ADR_IO, value);
+		}
+		if (address >= gb->apu.start_addr && address <= gb->apu.end_addr) {
+			u64 frame_cycle_count = gb->cpu.cycle_count - gb->frame_begin_cycle_count;
+			gb->apu.write_register(frame_cycle_count, address, (int)value);
 		}
 		*map(address) = value;
 	}

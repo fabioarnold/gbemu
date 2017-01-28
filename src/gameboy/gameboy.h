@@ -4,11 +4,10 @@ DMA within 160 cycles (not instant)
 8x16 sprites
 input interrupt
 serial interrupt
-audio
 serial
 memory bank controllers MBC1 √ MBC3 MBC5
 actually guard SRAM if sram_enabled becomes false
-halt/stop behavior
+proper halt/stop behavior
 LCD disable
 */
 
@@ -20,6 +19,7 @@ const int VRAM_FREQ_HZ = 2<<20; // 2 MiHz
 struct GameBoy {
 	CPU cpu;
 	PPU ppu;
+	Gb_Apu apu;
 	Memory memory;
 
 	// input
@@ -31,6 +31,10 @@ struct GameBoy {
 	ButtonState button_b;
 	ButtonState button_select;
 	ButtonState button_start;
+
+	// audio output
+	u64 frame_begin_cycle_count;
+	Stereo_Buffer audio_buffer;
 
 	bool running = false;
 

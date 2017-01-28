@@ -47,6 +47,17 @@ if [ ! -f build/libImGui.a ]; then
 	fi
 fi
 
+# Gb Apu
+INCLUDE_DIRS="$INCLUDE_DIRS -Ilib/gbapu"
+LIB_GBAPU="-lGbApu"
+if [ ! -f build/libGbApu.a ]; then
+	echo "building Gb Apu..."
+	./build_gbapu.sh
+	if [ $? = 1 ]; then
+		exit 1
+	fi
+fi
+
 # platform specific changes
 if [[ $PLATFORM == "Darwin" ]]; then
 	LIB_OPENGL="-framework OpenGL -framework Cocoa"
@@ -61,7 +72,7 @@ fi
 
 # final compiler flags
 CFLAGS="$CFLAGS `pkg-config --cflags sdl2` $INCLUDE_DIRS"
-LDFLAGS="$LDFLAGS $LIB_SDL2 $LIB_OPENGL $LIB_IMGUI"
+LDFLAGS="$LDFLAGS $LIB_SDL2 $LIB_OPENGL $LIB_IMGUI $LIB_GBAPU"
 
 mkdir -p build
 c++ $CFLAGS src/main_sdl2_ub.cpp $LDFLAGS -o build/$TARGET

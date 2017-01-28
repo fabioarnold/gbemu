@@ -1,5 +1,4 @@
 #include <cstdio>
-// docs: http://marc.rawer.de/Gameboy/index.html
 
 #include <stdarg.h>
 #include <ctime>
@@ -22,6 +21,9 @@
 #include <imgui.h>
 #include "imgui_impl_sdl2_gl2.h" // the impl we want to use
 
+// Gb_Apu
+#include <Gb_Apu.h>
+#include <Multi_Buffer.h>
 
 
 #include "system/defines.h"
@@ -65,20 +67,6 @@
 #define WINDOW_TITLE "GameBoy Emulator"
 SDL_Window *sdl_window;
 SDL_GLContext sdl_gl_context;
-
-void mixAudio(void *udata, Uint8 *stream, int len) {
-	u64 static t = 0;
-	int sample_count = len/sizeof(float);
-	float *samples = (float*)stream;
-	float freq = 220.0f; // Hz
-	float volume = 0.25f;
-	int period = AUDIO_SAMPLE_RATE / (int)freq;
-	for (int i = 0; i < sample_count; i++) {
-		float rect = -1.0f;
-		if (t++ % period >= period/2) rect = 1.0f;
-		samples[i] = volume * rect; // ~440 Hz
-	}
-}
 
 /* inits sdl and creates an opengl window */
 static void initSDL(VideoMode *video) {
@@ -144,8 +132,8 @@ static void initSDL(VideoMode *video) {
 	SDL_AudioSpec want, have;
 	SDL_zero(want);
 	want.freq = AUDIO_SAMPLE_RATE;
-	want.format = AUDIO_F32;
-	want.channels = 1;
+	want.format = AUDIO_S16SYS;
+	want.channels = 2;
 	want.samples = 1024;
 	want.callback = nullptr; // no callback, we push our audio
 
@@ -156,6 +144,9 @@ static void initSDL(VideoMode *video) {
 	}
 	if (have.format != want.format) {
 		LOGW("didn't get specified audio format");
+	}
+	if (have.freq != want.freq) {
+		LOGW("didn't get specified audio frequency");
 	}
 }
 

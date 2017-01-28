@@ -1,4 +1,8 @@
 void GameBoy::init() {
+	audio_buffer.set_sample_rate(AUDIO_SAMPLE_RATE);
+	audio_buffer.clock_rate(CPU_FREQ_HZ);
+	apu.output(audio_buffer.center(), audio_buffer.left(), audio_buffer.right());
+
 	memory.gb = this;
 	cpu.memory = &memory;
 	ppu.gb = this;
@@ -8,6 +12,7 @@ void GameBoy::init() {
 void GameBoy::reset() {
 	cpu.reset();
 	ppu.reset();
+	apu.reset(); frame_begin_cycle_count = 0;
 	memory.reset();
 	running = false;
 }
