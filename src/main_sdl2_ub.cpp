@@ -36,7 +36,12 @@
 #include "video/image.h"
 #include "video/texture.h"
 
-#include "gameboy.h"
+#include "audio.h"
+
+#include "gameboy/cpu.h"
+#include "gameboy/ppu.h"
+#include "gameboy/memory.h"
+#include "gameboy/gameboy.h"
 
 #include "gui/memory_editor.h"
 #include "app.h"
@@ -50,16 +55,36 @@
 #include "video/image.cpp"
 #include "video/texture.cpp"
 
+#include "gameboy/cpu.cpp"
+#include "gameboy/ppu.cpp"
+#include "gameboy/memory.cpp"
+#include "gameboy/gameboy.cpp"
+
 #include "app.cpp"
 
 #define WINDOW_TITLE "GameBoy Emulator"
 SDL_Window *sdl_window;
 SDL_GLContext sdl_gl_context;
 
+void mixAudio(void *udata, Uint8 *stream, int len) {
+	u64 static t = 0;
+	int sample_count = len/sizeof(float);
+	float *samples = (float*)stream;
+	float freq = 220.0f; // Hz
+	float volume = 0.25f;
+	int period = AUDIO_SAMPLE_RATE / (int)freq;
+	for (int i = 0; i < sample_count; i++) {
+		float rect = -1.0f;
+		if (t++ % period >= period/2) rect = 1.0f;
+		samples[i] = volume * rect; // ~440 Hz
+	}
+}
+
 /* inits sdl and creates an opengl window */
 static void initSDL(VideoMode *video) {
 	SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER);
 
+	// init video
 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
 	//SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
@@ -114,9 +139,28 @@ static void initSDL(VideoMode *video) {
 	#ifndef __APPLE__
 	glewInit();
 	#endif
+
+	// init audio
+	SDL_AudioSpec want, have;
+	SDL_zero(want);
+	want.freq = AUDIO_SAMPLE_RATE;
+	want.format = AUDIO_F32;
+	want.channels = 1;
+	want.samples = 1024;
+	want.callback = nullptr; // no callback, we push our audio
+
+	audio_device = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+	if (!audio_device) {
+		LOGE("Failed to open audio device %s", SDL_GetError());
+		exit(2);
+	}
+	if (have.format != want.format) {
+		LOGW("didn't get specified audio format");
+	}
 }
 
 void quitSDL() {
+	SDL_CloseAudio();
 	SDL_DestroyWindow(sdl_window);
 	SDL_GL_DeleteContext(sdl_gl_context);
 	SDL_Quit();

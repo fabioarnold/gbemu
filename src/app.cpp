@@ -368,6 +368,31 @@ struct MyImTexture {
 	GLuint id;
 };
 
+void renderAudio() {
+	float samples[4096];
+
+	u32 bytes_queued = SDL_GetQueuedAudioSize(audio_device);
+	int samples_queued = (int)(bytes_queued/sizeof(float));
+
+	int samples_per_frame = AUDIO_SAMPLE_RATE / 60; // TODO: replace with actual frame rate
+	//samples_per_frame = 2048;
+
+	int samples_to_generate = 2*samples_per_frame - samples_queued;
+	assert(samples_to_generate <= ARRAY_COUNT(samples));
+
+	const float sin_period = 2.0f * M_PI;
+	float freq = 440.0f;
+	float volume = 0.0f;
+	static u64 t = 0;
+	for (int i = 0; i < samples_to_generate; i++) {
+		float f = sin_period * freq / (float)AUDIO_SAMPLE_RATE;
+		samples[i] = volume * sinf(t++ * f);
+	}
+	//LOGI("rendered %d samples", samples_to_generate);
+
+	SDL_QueueAudio(audio_device, (void*)samples, sizeof(float)*samples_to_generate);
+}
+
 void App::update() {
 	glClear(GL_COLOR_BUFFER_BIT);
 	if (gb.memory.rom) rom_editor.Draw("ROM Editor", gb.memory.rom, gb.memory.rom_size);
@@ -391,6 +416,9 @@ void App::update() {
 		}
 		if (gb.ppu.vsync) break;
 	}
+
+	renderAudio();
+	SDL_PauseAudioDevice(audio_device, 0); // start playing audio
 
 	updateGLTextures();
 
