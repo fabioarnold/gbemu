@@ -56,6 +56,7 @@ struct Memory {
 	MBC mbc; // set on loadROM
 	void mbc0(u16 address, u8 value); // dummy MBC
 	void mbc1(u16 address, u8 value);
+	void mbc2(u16 address, u8 value);
 	void mbc3(u16 address, u8 value);
 	void mbc5(u16 address, u8 value);
 

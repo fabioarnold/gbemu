@@ -126,6 +126,25 @@ void Memory::mbc1(u16 address, u8 value) {
 	}
 }
 
+void Memory::mbc2(u16 address, u8 value) {
+	switch (address>>13) {
+	case 0x0:
+		// least significant bit of the upper address byte must be zero to enable/disable cart SRAM
+		sram_enabled = (value&0xF) == 0xA;
+		break;
+	case 0x1:
+		// least significant bit of the upper address byte must be one to select a ROM bank
+		{
+			u8 bank = value&0xF;
+			if (!bank) bank++;
+			setROMBank(bank);
+		}
+		break;
+	default: break;
+		//LOGW("MBC2 unknown address 0x%04X", address);
+	}
+}
+
 void Memory::mbc3(u16 address, u8 value) {
 	switch (address>>13) {
 	case 0x0: // 0x0000 - 0x1FFF enable/disable SRAM
@@ -261,7 +280,7 @@ void Memory::loadROM(const char *filepath) {
 		break;
 	case 0x05: // MBC2
 	case 0x06: // MBC2+BATTERY
-		LOGW("MBC2 not implemented");
+		mbc = &Memory::mbc2;
 		break;
 	case 0x0B: // MMM01
 	case 0x0C: // MMM01+RAM
