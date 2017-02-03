@@ -160,8 +160,8 @@ void PPU::step() {
 					if (obj->x > LX+8) break; // not yet
 
 					// blit obj over the first 8 pixel in the fifo
-					int sy = (LY - obj->y) & 0x7;
-					if (obj->attrib_flip_y) sy = 7-sy;
+					int sy = (LY - obj->y) & (obj_h-1);
+					if (obj->attrib_flip_y) sy = obj_h-1-sy;
 					// line with high and low bits
 					u8 llb = vram[2*(8*obj->tile+sy)+0];
 					u8 lhb = vram[2*(8*obj->tile+sy)+1];

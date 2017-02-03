@@ -1,7 +1,6 @@
 /*
 TODO:
 DMA within 160 cycles (not instant)
-8x16 sprites
 input interrupt
 serial interrupt
 serial
@@ -9,6 +8,7 @@ memory bank controllers MBC1 √ MBC3 MBC5
 actually guard SRAM if sram_enabled becomes false
 proper halt/stop behavior
 LCD disable
+disable write to VRAM during pixel transfer + garbage read
 */
 
 const int CPU_FREQ_HZ  = 4<<20; // 4 MiHz

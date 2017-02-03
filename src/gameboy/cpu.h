@@ -69,7 +69,7 @@ struct CPU {
 	// debug
 	bool DEBUG_not_implemented_error = false;
 	bool DEBUG_illegal_instruction = false;
-	int DEBUG_break_point = 0;
+	int DEBUG_break_point = 0xFFFF;
 
 	void reset();
 	void step();
