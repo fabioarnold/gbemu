@@ -13,6 +13,7 @@ const int REG_TAC  = 0x07;
 
 // LCD
 const int REG_LCDC = 0x40;
+const int REG_BGP  = 0X47;
 
 // DMA
 const int REG_DMA = 0x46; // source address XX00-XX9F

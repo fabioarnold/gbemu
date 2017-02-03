@@ -241,8 +241,11 @@ void PPU::step() {
 		if (cycle_count - cycle_begin >= VBLANK_CYCLES) {
 			// frame complete
 			io->LY = 0;
+			if (io->STAT_coincide_interrupt_enable && io->LY == io->LYC) {
+				io->IF_lcd_stat = 1;
+				gb->cpu.halted = false;
+			}
 			cycle_begin = cycle_count;
-			io->IF_vblank = 0; // clear IRQ
 
 			state = PPU_STATE_OAM_SEARCH;
 			// init oam search

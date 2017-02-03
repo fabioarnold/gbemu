@@ -41,7 +41,9 @@ u8 Memory::load8(u16 address) {
 	}
 	if (address >= gb->apu.start_addr && address <= gb->apu.end_addr) {
 		u64 frame_cycle_count = gb->cpu.cycle_count - gb->frame_begin_cycle_count;
-		return gb->apu.read_register(frame_cycle_count, address);
+		if (gb->audio_enabled) {
+			return gb->apu.read_register(frame_cycle_count, address);
+		}
 	}
 	return *map(address);
 }
@@ -55,7 +57,9 @@ void Memory::store8(u16 address, u8 value) {
 		}
 		if (address >= gb->apu.start_addr && address <= gb->apu.end_addr) {
 			u64 frame_cycle_count = gb->cpu.cycle_count - gb->frame_begin_cycle_count;
-			gb->apu.write_register(frame_cycle_count, address, (int)value);
+			if (gb->audio_enabled) {
+				gb->apu.write_register(frame_cycle_count, address, (int)value);
+			}
 		}
 		*map(address) = value;
 	}

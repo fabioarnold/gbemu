@@ -1005,9 +1005,14 @@ void ret() {
 }
 //0xD9 RETI
 void reti() {
-	condition = true;
-	state = CPU_STATE_OP2;
-	instruction = &CPU::ret_sph;
+	// TODO: RETI is two commands in one. 
+	// RETI is EI / RET in that order.
+	// The command EI doesn't take effect immediately but DI does.
+	// EI takes effect following the instruction that follows it.
+	// From: http://www.devrs.com/gb/files/faqs.html#IntWhat
+	address = SP;
+	state = CPU_STATE_MEMORY_LOAD;
+	instruction = &CPU::ret_spl;
 	ei();
 }
 
